@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "clinic": {
+    "key": "demo-clinic",
+    "name": "عيادة مُجيب التجريبية",
+    "locationName": "الفرع الرئيسي",
+    "timezone": "Asia/Riyadh"
+  },
+  "services": [
+    {
+      "key": "family-medicine",
+      "name": "طب الأسرة",
+      "aliases": ["طب عام", "طبيب عام", "family medicine", "general practice"],
+      "durationMinutes": 20
+    },
+    {
+      "key": "pediatrics",
+      "name": "طب الأطفال",
+      "aliases": ["أطفال", "طبيب أطفال", "pediatrics"],
+      "durationMinutes": 20
+    },
+    {
+      "key": "dermatology",
+      "name": "الجلدية",
+      "aliases": ["جلدية", "جلد", "الأمراض الجلدية", "البشرة", "dermatology"],
+      "durationMinutes": 30
+    }
+  ],
+  "practitioners": [
+    {
+      "key": "dr-fahad",
+      "name": "فهد العتيبي",
+      "gender": "male",
+      "aliases": ["Fahad Alotaibi"],
+      "serviceKeys": ["family-medicine"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "21:00" }]
+    },
+    {
+      "key": "dr-khalid",
+      "name": "خالد الشهري",
+      "gender": "male",
+      "aliases": ["Khalid Alshehri"],
+      "serviceKeys": ["pediatrics"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" }]
+    },
+    {
+      "key": "dr-reem",
+      "name": "ريم القحطاني",
+      "gender": "female",
+      "aliases": ["Reem Alqahtani"],
+      "serviceKeys": ["pediatrics"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "20:00" }]
+    },
+    {
+      "key": "dr-sara",
+      "name": "سارة الغامدي",
+      "gender": "female",
+      "aliases": ["Sara Alghamdi"],
+      "serviceKeys": ["dermatology"],
+      "availability": [
+        { "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" },
+        { "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "19:00" }
+      ]
+    }
+  ],
+  "blocks": [
+    { "key": "dr-sara-leave", "practitionerKey": "dr-sara", "fromDayOffset": 1, "toDayOffset": 3, "reason": "إجازة" }
+  ],
+  "patients": [
+    {
+      "key": "patient-one-upcoming",
+      "fullName": "عبدالله محمد الحربي",
+      "firstName": "عبدالله",
+      "nationalId": "1000000100",
+      "phone": "+966500000101",
+      "birthDate": "1990-03-14",
+      "gender": "male"
+    },
+    {
+      "key": "patient-two-upcoming",
+      "fullName": "نورة سعد الدوسري",
+      "firstName": "نورة",
+      "nationalId": "1000000200",
+      "phone": "+966500000102",
+      "birthDate": "1985-07-02",
+      "gender": "female"
+    },
+    {
+      "key": "patient-mother",
+      "fullName": "هيا فهد الزهراني",
+      "firstName": "هيا",
+      "nationalId": "1000000300",
+      "phone": "+966500000103",
+      "birthDate": "1992-11-20",
+      "gender": "female"
+    },
+    {
+      "key": "patient-child",
+      "fullName": "جود ماجد العنزي",
+      "firstName": "جود",
+      "nationalId": "1000000400",
+      "phone": "+966500000103",
+      "birthDate": "2020-05-09",
+      "gender": "female"
+    },
+    {
+      "key": "patient-no-appointments",
+      "fullName": "تركي سلمان القرني",
+      "firstName": "تركي",
+      "nationalId": "1000000500",
+      "phone": "+966500000105",
+      "birthDate": "1978-01-25",
+      "gender": "male"
+    }
+  ],
+  "appointments": [
+    { "key": "appt-one", "patientKey": "patient-one-upcoming", "practitionerKey": "dr-fahad", "serviceKey": "family-medicine", "workday": 2, "time": "17:00" },
+    { "key": "appt-two-a", "patientKey": "patient-two-upcoming", "practitionerKey": "dr-sara", "serviceKey": "dermatology", "workday": 1, "time": "10:00" },
+    { "key": "appt-two-b", "patientKey": "patient-two-upcoming", "practitionerKey": "dr-fahad", "serviceKey": "family-medicine", "workday": 4, "time": "18:20" },
+    { "key": "appt-child", "patientKey": "patient-child", "practitionerKey": "dr-reem", "serviceKey": "pediatrics", "workday": 1, "time": "16:40" }
+  ]
+}

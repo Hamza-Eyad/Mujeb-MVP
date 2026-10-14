@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>مُجيب — اختبار المحرك الصوتي</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>مُجيب</h1>
+      <span class="sub">واجهة اختبار المحرك الصوتي · Phase 0</span>
+    </div>
+    <div class="status">
+      <span class="dot" id="conn-dot" data-conn="off"></span>
+      <span id="conn-text">غير متصل</span>
+      <span class="state" id="state" data-state="idle">idle</span>
+    </div>
+    <button id="settings-toggle" class="ghost" type="button" aria-controls="settings-panel">إعدادات الجلسة</button>
+  </header>
+  <p class="notice" id="notice">بيئة اختبار محلية — لا تستخدم بيانات مرضى حقيقية.</p>
+
+  <main class="layout">
+    <!-- ── Conversation ─────────────────────────────────────────────── -->
+    <section class="panel chat" aria-labelledby="chat-title">
+      <div class="panel-head">
+        <h2 id="chat-title">المحادثة الصوتية</h2>
+        <button id="clear-chat" class="ghost small" type="button">مسح المحادثة</button>
+      </div>
+      <div class="chat-scroll" id="chat-scroll">
+        <ol id="transcript" class="transcript"></ol>
+        <p id="partial" class="bubble user partial" hidden></p>
+        <p id="chat-empty" class="empty">اضغط «ابدأ المحادثة» وتكلّم — ستظهر المحادثة هنا.</p>
+      </div>
+      <div class="chat-controls">
+        <button id="start" type="button">ابدأ المحادثة</button>
+        <button id="mute" class="ghost" type="button" disabled aria-pressed="false">كتم المايك</button>
+        <canvas id="wave" class="wave" aria-hidden="true"></canvas>
+        <label class="volume">الصوت <input type="range" id="volume" min="0" max="1.5" step="0.05" value="1"></label>
+        <button id="stop" class="danger" type="button" disabled>إنهاء</button>
+      </div>
+      <div class="mic-meter">
+        <span>Mic</span>
+        <div class="meter"><div id="mic-level"></div></div>
+        <span id="mic-db" class="num muted">–</span>
+      </div>
+    </section>
+
+    <!-- ── Monitoring ───────────────────────────────────────────────── -->
+    <div class="monitor">
+      <section class="panel" aria-labelledby="pipe-title">
+        <div class="panel-head">
+          <h2 id="pipe-title">مراقبة المسار اللحظي <span class="muted en">Live Pipeline</span></h2>
+          <span id="pipe-turn" class="muted small-text"></span>
+        </div>
+        <ol class="pipeline" id="pipeline">
+          <li class="stage" data-stage="mic" data-status="off">
+            <span class="stage-name">المايكروفون <bdi>Mic</bdi></span>
+            <span class="stage-status"></span><span class="stage-value num"></span><span class="stage-note"></span>
+          </li>
+          <li class="stage" data-stage="transport" data-status="off">
+            <span class="stage-name">نقل الصوت <bdi>Transport</bdi></span>
+            <span class="stage-status"></span><span class="stage-value num"></span><span class="stage-note"></span>
+          </li>
+          <li class="stage" data-stage="stt" data-status="off">
+            <span class="stage-name">التعرف على الكلام <bdi>STT</bdi></span>
+            <span class="stage-status"></span><span class="stage-value num"></span><span class="stage-note"></span>
+          </li>
+          <li class="stage" data-stage="llm" data-status="off">
+            <span class="stage-name">النموذج <bdi>LLM</bdi></span>
+            <span class="stage-status"></span><span class="stage-value num"></span><span class="stage-note"></span>
+          </li>
+          <li class="stage" data-stage="tts" data-status="off">
+            <span class="stage-name">تحويل النص لصوت <bdi>TTS</bdi></span>
+            <span class="stage-status"></span><span class="stage-value num"></span><span class="stage-note"></span>
+          </li>
+          <li class="stage" data-stage="playback" data-status="off">
+            <span class="stage-name">تشغيل الصوت <bdi>Playback</bdi></span>
+            <span class="stage-status"></span><span class="stage-value num"></span><span class="stage-note"></span>
+          </li>
+        </ol>
+        <div class="gantt" id="gantt" aria-label="تداخل مراحل الدور الحالي زمنيًا"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="metrics-title">
+        <div class="panel-head">
+          <h2 id="metrics-title">عدادات الأداء</h2>
+          <div class="seg" role="group" aria-label="نوع القياس">
+            <button type="button" data-mode="current" aria-pressed="true">الدور الحالي</button>
+            <button type="button" data-mode="median" aria-pressed="false">الوسيط <bdi>Median</bdi></button>
+          </div>
+        </div>
+        <div class="metrics-strip" id="metrics"></div>
+        <div class="help-box" id="metric-help" hidden></div>
+        <details class="counters-wrap" open>
+          <summary>عدادات الجلسة</summary>
+          <dl id="counters" class="counters"></dl>
+        </details>
+      </section>
+
+      <div class="split">
+        <section class="panel" aria-labelledby="events-title">
+          <div class="panel-head">
+            <h2 id="events-title">الأحداث الحية</h2>
+            <div class="head-actions">
+              <select id="event-filter" aria-label="تصفية الأحداث">
+                <option value="all">الكل</option>
+                <option value="MIC">MIC</option>
+                <option value="STT">STT</option>
+                <option value="LLM">LLM</option>
+                <option value="TTS">TTS</option>
+                <option value="PLAY">PLAY</option>
+                <option value="BARGE">المقاطعة</option>
+                <option value="TOOL">الأدوات</option>
+                <option value="STATE">الحالة</option>
+                <option value="SYS">النظام</option>
+              </select>
+              <button id="clear-events" class="ghost small" type="button">مسح</button>
+            </div>
+          </div>
+          <ol id="events" class="events"></ol>
+        </section>
+
+        <section class="panel" aria-labelledby="errors-title">
+          <div class="panel-head">
+            <h2 id="errors-title">أخطاء وتحذيرات</h2>
+            <button id="clear-errors" class="ghost small" type="button">مسح</button>
+          </div>
+          <ol id="errors" class="errors"></ol>
+        </section>
+      </div>
+
+      <section class="panel" id="settings-panel" aria-labelledby="settings-title">
+        <details id="settings-details" open>
+          <summary><h2 id="settings-title">إعدادات الجلسة</h2></summary>
+          <div class="settings-grid">
+            <fieldset id="client-audio">
+              <legend>صوت المتصفح (قبل بدء المحادثة)</legend>
+              <label>مسار التشغيل
+                <select id="route">
+                  <option value="direct">direct (Web Audio)</option>
+                  <option value="webrtc-loopback">webrtc-loopback (Chrome AEC)</option>
+                </select>
+              </label>
+              <label class="check"><input type="checkbox" id="aec" checked> echoCancellation</label>
+              <label class="check"><input type="checkbox" id="ns" checked> noiseSuppression</label>
+              <label class="check"><input type="checkbox" id="agc" checked> autoGainControl</label>
+              <p id="audio-info" class="muted small-text"></p>
+            </fieldset>
+            <div>
+              <h3>الجلسة والمزودون</h3>
+              <dl id="session-info" class="kv"><div><dt>الحالة</dt><dd>لم تبدأ جلسة بعد</dd></div></dl>
+            </div>
+          </div>
+          <details class="raw">
+            <summary>إعدادات STT الفعلية من الخادم</summary>
+            <pre id="stt-config">N/A</pre>
+          </details>
+        </details>
+      </section>
+    </div>
+  </main>
+
+  <!-- ── Timing history ─────────────────────────────────────────────── -->
+  <section class="panel timings-panel" aria-labelledby="timings-toggle">
+    <div class="panel-head">
+      <button id="timings-toggle" class="collapse" type="button" aria-expanded="true" aria-controls="timings-body">الأزمنة لكل دور (ms)</button>
+      <button id="export-csv" class="ghost small" type="button">تصدير CSV</button>
+    </div>
+    <div id="timings-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>kind</th><th>outcome</th><th>STT finalize</th><th>LLM TTFT</th><th>LLM total</th><th>tools</th><th>TTS TTFB</th>
+              <th>first audio after commit</th><th>buffer→play</th><th>E2E</th><th>barge-in reaction</th><th>interrupt stop</th><th>RTT</th>
+            </tr>
+          </thead>
+          <tbody id="timings"></tbody>
+          <tfoot id="medians"></tfoot>
+        </table>
+      </div>
+      <p class="muted small-text">اضغط على أي دور لعرض تفاصيله. E2E = بداية التشغيل الفعلي − نهاية كلامك (حسب VAD المحرك). مسار webrtc-loopback يضيف تأخيرًا لا يظهر في هذه الأرقام.</p>
+    </div>
+  </section>
+
+  <audio id="loopback-audio" hidden></audio>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

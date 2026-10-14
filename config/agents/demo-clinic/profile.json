@@ -1,0 +1,18 @@
+{
+  "tenantId": "demo",
+  "agentId": "demo-clinic",
+  "displayName": "عيادة مُجيب التجريبية",
+  "languageCode": "ar",
+  "greeting": "هلا والله، معك مُجيب من العيادة التجريبية. كيف أقدر أخدمك؟",
+  "instructionsFile": "instructions.md",
+  "historyMaxTurns": 12,
+  "timezone": "Asia/Riyadh",
+  "appointmentTools": {
+    "instructionsFile": "tools.md",
+    "patientVerification": "dev-identifier-dob",
+    "maxToolRounds": 5,
+    "pendingActionTtlSec": 120,
+    "maxReconfirmations": 2,
+    "waitPhrase": "لحظة أشيك لك."
+  }
+}

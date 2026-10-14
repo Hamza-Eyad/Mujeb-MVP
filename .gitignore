@@ -1,0 +1,28 @@
+node_modules/
+dist/
+coverage/
+logs/
+*.log
+
+# Secrets — only .env.example is tracked
+.env
+.env.*
+!.env.example
+
+# Local credentials and keys
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+
+# Local Claude Code settings (per-developer permissions)
+.claude/settings.local.json
+
+# Temporary files, editor and OS artifacts
+*.tmp
+*.tsbuildinfo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
