@@ -15,6 +15,8 @@
 ## التحضير
 1. في `.env`: `MUJEEB_SCHEDULING_PROVIDER=medplum` و`MEDPLUM_CLIENT_ID` و`MEDPLUM_CLIENT_SECRET`.
 2. تأكد أن الـseed حديث: `npm run seed:medplum -- --apply`. وإذا مرّ يوم أو أكثر أضف `--reset-appointments`.
+   - **في PowerShell اكتب `npm.cmd` بدل `npm`.** الـnpm العادي هناك يحذف `--`، فيضيع `--apply` ويصير التشغيل تجريبيًا (dry run) بدون أي رسالة خطأ.
+   - **علامة النجاح:** ملف `medplum-seed-report-*.json` جديد في `logs/`. إذا ظهر ملف `medplum-seed-plan-*.json` فقط، فما تغيّر شيء.
 3. شغّل `npm run dev`، وافتح `http://127.0.0.1:8787` في Chrome أو Edge، ثم اضغط بدء.
 4. ابدأ بسماعة رأس. بعدها كرر الاختبارات 7 و8 و12 على سماعة اللابتوب لاختبار الصدى.
 
