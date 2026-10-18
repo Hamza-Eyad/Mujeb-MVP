@@ -124,7 +124,7 @@ export async function connectLiveMedplum(options?: { fetch?: typeof fetch; log?:
     }
     return { cancelled, failed };
   };
-  return { settings, client, system, guarded: guard(system, testPatientIds, ctx), dataset, anchorDate, timeZone, ctx, registerTestPatient, testPatientIds, cleanup };
+  return { settings, client, system, guarded: guardWrites(system, testPatientIds, ctx), dataset, anchorDate, timeZone, ctx, registerTestPatient, testPatientIds, cleanup };
 }
 
 /** The seed's anchor day, read back from its leave block; fails clearly when the seeded scenarios have expired. */
@@ -144,8 +144,8 @@ async function seedAnchor(client: MedplumClient, dataset: SchedulingDataset, tim
   return anchor;
 }
 
-/** Writes are allowed only for appointments of patients this run registered. */
-function guard(system: SchedulingSystem, own: ReadonlySet<string>, ctx: () => SchedulingContext): SchedulingSystem {
+/** Writes are allowed only for appointments of patients this run registered (`own` grows with each registration). */
+export function guardWrites(system: SchedulingSystem, own: ReadonlySet<string>, ctx: () => SchedulingContext): SchedulingSystem {
   const ensureOwn = async (appointmentId: string): Promise<void> => {
     const appointment = await system.getAppointment(ctx(), appointmentId).catch(() => undefined);
     if (appointment !== undefined && !own.has(appointment.patientId)) {

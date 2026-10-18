@@ -33,7 +33,9 @@ Do not add phone/SIP/database/admin UI just to look more complete.
 - Errors/cancellation do not leave the process in a corrupted state.
 - Tests can run without paid API calls by default.
 
-## Phase 1 — Agent behavior and appointment tools on a sandbox HIS — CURRENT
+## Phase 1 — Agent behavior and appointment tools on a sandbox HIS — IMPLEMENTED (2026-10-18)
+
+Status: all plan steps (0–9) are implemented and tested, including the Medplum replaceability checks (plan step 9: the same agent scenarios pass on the in-memory system and on Medplum, selected by configuration only). Still open: the manual microphone matrix in `docs/MANUAL_SCHEDULING_TESTS.md` needs a human run on the latest fixes. The next phase is not chosen yet.
 
 Goal: prove that Mujeeb can move beyond conversation into controlled actions.
 
