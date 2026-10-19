@@ -96,6 +96,29 @@ describe('AgentTurn', () => {
     expect(agent.sideEffects).toBe(false);
     expect(agent.exchanges).toEqual([]);
   });
+
+  it('says the wait phrase once: a later round that opens with it again does not repeat it (observed live)', async () => {
+    const phrase = 'لحظة أشيك لك.';
+    const spoken = async (firstRoundText: string | undefined, secondRoundText: string): Promise<string> => {
+      const llm = new FakeLanguageModel({
+        firstTokenDelayMs: 0,
+        tokenDelayMs: 0,
+        script: (_r, round) => (round === 0 ? { ...(firstRoundText !== undefined ? { text: firstRoundText } : {}), toolCalls: [{ name: 'read', arguments: {} }] } : { text: secondRoundText }),
+      });
+      const agent = new AgentTurn({ ...base(llm, toolbox().box, new AbortController().signal), waitPhrase: phrase });
+      return (await drainOutput(agent)).map((o) => (o.type === 'text' ? o.text : ' | ')).join('');
+    };
+    const times = (text: string): number => text.split(phrase).length - 1;
+
+    const afterSystem = await spoken(undefined, 'لحظة أشيك لك. عندي ثلاث أوقات.'); // the system said it; the model repeats it
+    expect(times(afterSystem)).toBe(1);
+    expect(afterSystem).toContain('عندي ثلاث أوقات.');
+    const afterModel = await spoken('لحظة أشيك لك.', 'لحظة أشيك لك. عندي ثلاث أوقات.'); // the model said it, then again
+    expect(times(afterModel)).toBe(1);
+    expect(afterModel).toContain('عندي ثلاث أوقات.');
+    // Words that only start the same way are kept as they are.
+    expect(await spoken(undefined, 'لحظة واحدة، عندي ثلاث أوقات.')).toContain('لحظة واحدة، عندي ثلاث أوقات.');
+  });
 });
 
 describe('text chunker flush', () => {
