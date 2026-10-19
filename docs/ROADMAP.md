@@ -35,7 +35,17 @@ Do not add phone/SIP/database/admin UI just to look more complete.
 
 ## Phase 1 — Agent behavior and appointment tools on a sandbox HIS — IMPLEMENTED (2026-10-18)
 
-Status: all plan steps (0–9) are implemented and tested, including the Medplum replaceability checks (plan step 9: the same agent scenarios pass on the in-memory system and on Medplum, selected by configuration only). Still open: the manual microphone matrix in `docs/MANUAL_SCHEDULING_TESTS.md` needs a human run on the latest fixes. The next phase is not chosen yet.
+Status:
+- All plan steps (0–9) are implemented and tested, including the Medplum replaceability checks. Plan step 9 showed that the same agent scenarios pass on the in-memory system and on Medplum, selected by configuration only.
+- Manual microphone calls on 2026-10-18 booked an appointment for an existing patient and registered a new patient, both end to end on Medplum. The fixes from those calls are in the plan.
+- The next phase is not chosen yet.
+
+Known quality items, not blocking:
+- STT misreads runs of identical digits.
+- Spoken dates of birth are converted by the model, and callers do not always catch a wrong read-back.
+- Hijri dates of birth are not supported (Gregorian only, by owner decision).
+- STT commit and barge-in latency.
+- A leftover manual "Dental Consultation" service in the Medplum sandbox.
 
 Goal: prove that Mujeeb can move beyond conversation into controlled actions.
 

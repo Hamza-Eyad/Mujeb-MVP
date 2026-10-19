@@ -375,9 +375,10 @@ export class AppointmentTools {
     if (input.phone !== null && phone === undefined) {
       throw new ToolRejection('invalid_phone', 'Tell the caller the digits you received (`heard`, as given) and ask for the mobile number again (10 digits starting with 05).', heardBack(phoneDigitsHeard(input.phone)));
     }
-    if (nationalId === undefined && phone === undefined) throw new ToolRejection('invalid_arguments', 'Provide national_id or phone.');
+    const missing = [...(nationalId === undefined && phone === undefined ? ['national_id_or_phone'] : []), ...(input.birth_date === null ? ['birth_date'] : [])];
+    if (missing.length > 0 || input.birth_date === null) throw missingInformation(missing);
     const birthDate = normalizeBirthDate(input.birth_date, this.today());
-    if (birthDate === undefined) throw new ToolRejection('invalid_birth_date', 'Ask the caller to repeat the date of birth (day, month, year).');
+    if (birthDate === undefined) throw birthDateRejection(input.birth_date, 'Ask the caller to repeat the date of birth (day, month, year).');
 
     const candidates = await this.read(turn, (ctx) =>
       this.o.scheduling.findPatients(ctx, { ...(nationalId !== undefined ? { nationalId } : {}), ...(phone !== undefined ? { phone } : {}) }),
@@ -420,19 +421,25 @@ export class AppointmentTools {
 
   private async proposeRegistration(input: ProposeRegistrationInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
     if (this.verification.locked) return lockedOutput();
-    const nationalId = normalizeNationalId(input.national_id);
+    const { full_name: fullName, national_id: rawNationalId, phone: rawPhone, birth_date: rawBirthDate } = input;
+    if (fullName === null || rawNationalId === null || rawPhone === null || rawBirthDate === null) {
+      const given = { full_name: fullName, national_id: rawNationalId, phone: rawPhone, birth_date: rawBirthDate };
+      throw missingInformation(Object.entries(given).filter(([, value]) => value === null).map(([field]) => field));
+    }
+    const nationalId = normalizeNationalId(rawNationalId);
     if (nationalId === undefined) throw new ToolRejection('invalid_national_id', 'Ask the caller to repeat the 10-digit national ID.');
-    const phone = normalizePhone(input.phone);
+    const phone = normalizePhone(rawPhone);
     if (phone === undefined) throw new ToolRejection('invalid_phone', 'Ask the caller to repeat the mobile number.');
-    const birthDate = normalizeBirthDate(input.birth_date, this.today());
-    if (birthDate === undefined) throw new ToolRejection('invalid_birth_date', 'Ask the caller to repeat the date of birth.');
-    const target: ActionTarget = { kind: 'registration', patient: { fullName: input.full_name.trim(), nationalId, phone, birthDate, gender: input.gender } };
+    const birthDate = normalizeBirthDate(rawBirthDate, this.today());
+    if (birthDate === undefined) throw birthDateRejection(rawBirthDate, 'Ask the caller to repeat the date of birth.');
+    const gender = input.gender ?? 'unknown';
+    const target: ActionTarget = { kind: 'registration', patient: { fullName: fullName.trim(), nationalId, phone, birthDate, gender } };
     await this.ensureNoUnresolvedWrite(actionPatientKey(target));
     // The caller's own details are read back in full (digit by digit) so STT mistakes in the digits can be caught.
     const speech =
       `للتأكيد: بفتح ملف جديد باسم ${target.patient.fullName}، رقم الهوية ${spokenDigits(nationalId)}، ` +
       `الجوال ${spokenDigits(localPhone(phone))}، تاريخ الميلاد ${spokenCalendarDate(birthDate)}. أفتح الملف؟`;
-    return this.propose(target, { full_name: target.patient.fullName, national_id: nationalId, phone: localPhone(phone), birth_date: birthDate, gender: input.gender }, speech, turn);
+    return this.propose(target, { full_name: target.patient.fullName, national_id: nationalId, phone: localPhone(phone), birth_date: birthDate, gender }, speech, turn);
   }
 
   private async proposeBooking(input: ProposeBookingInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
@@ -618,18 +625,19 @@ export class AppointmentTools {
     }
   }
 
-  /** The result as the scheduling system recorded it; for appointments the system speaks it itself (authoritative date and time). */
+  /** The result as the scheduling system recorded it, spoken by the system itself (authoritative names, dates and times). */
   private writeSuccess(target: ActionTarget, result: WriteResult): ToolOutput {
+    const hint = 'Done and recorded by the scheduling system. The system has told the caller the result; do not repeat it.';
     if (target.kind === 'registration') {
       const patient = result as PatientRecord;
       this.verification.markRegistered(patient);
-      return { status: 'done', patient: { ref: this.refs.register('patient', patient), first_name: patient.firstName } };
+      const speech = `تم فتح الملف باسم ${patient.fullName}. تبي أخدمك بشي ثاني؟`;
+      return { status: 'done', patient: { ref: this.refs.register('patient', patient), first_name: patient.firstName }, spoken: speech, hint, [SPEAK]: speech };
     }
     const appointment = result as AppointmentRecord;
     const summary = { ref: this.refs.register('appointment', appointment), ...this.describe(appointment) };
     const said = target.kind === 'booking' ? 'تم الحجز:' : target.kind === 'reschedule' ? 'تم تغيير الموعد، وصار' : 'تم إلغاء';
     const speech = `${said} ${this.spokenAppointment(appointment)}. تبي أخدمك بشي ثاني؟`;
-    const hint = 'Done and recorded by the scheduling system. The system has told the caller the result; do not repeat it.';
     return target.kind === 'cancellation'
       ? { status: 'done', cancelled: summary, spoken: speech, hint, [SPEAK]: speech }
       : { status: 'done', appointment: summary, spoken: speech, hint, [SPEAK]: speech };
@@ -772,6 +780,24 @@ export class AppointmentTools {
   private audit(turn: ToolTurnContext, phase: string, actionRef: string, kind: string, fingerprint: string, outcome: string): void {
     this.log.info('tool.audit', { turn_id: turn.turnId, phase, action_ref: actionRef, kind, fingerprint, outcome });
   }
+}
+
+/** Details the caller has not given yet: ask for them; a guess would be checked or stored as if the caller said it. */
+function missingInformation(missing: readonly string[]): ToolRejection {
+  return new ToolRejection('missing_information', 'Ask the caller for the missing details, one question at a time. Never guess them or use placeholder values.', { missing });
+}
+
+/**
+ * A date of birth the tools cannot use. Dates of birth are Gregorian for now; a year in the Hijri range
+ * (a Saudi caller may give one) gets its own answer, so the caller is asked for the Gregorian date
+ * instead of just "repeat".
+ */
+function birthDateRejection(raw: string, hint: string): ToolRejection {
+  const year = Number(toAsciiDigits(raw).trim().slice(0, 4));
+  if (year >= 1300 && year <= 1500) {
+    return new ToolRejection('hijri_birth_date', 'This looks like a Hijri year. Hijri dates are not supported yet: ask for the date of birth in the Gregorian calendar (بالميلادي).');
+  }
+  return new ToolRejection('invalid_birth_date', hint);
 }
 
 function lockedOutput(): Record<string, unknown> {

@@ -29,20 +29,25 @@ export const searchAvailableSlotsInput = z.strictObject({
   for_appointment_ref: ref.nullable(),
 });
 
+/**
+ * Caller details are `null` until the caller has said them: the server then asks for what is missing, so the
+ * model is never pushed to fill a required field with a guess (observed live: birth date "1900-01-01").
+ */
 export const findPatientInput = z.strictObject({
   national_id: shortText(32).nullable(),
   phone: phoneText.nullable(),
-  birth_date: localDate,
+  birth_date: localDate.nullable(),
 });
 
 export const listPatientAppointmentsInput = z.strictObject({ patient_ref: ref });
 
 export const proposeRegistrationInput = z.strictObject({
-  full_name: shortText(120),
-  national_id: shortText(32),
-  phone: phoneText,
-  birth_date: localDate,
-  gender: z.enum(['female', 'male']),
+  full_name: shortText(120).nullable(),
+  national_id: shortText(32).nullable(),
+  phone: phoneText.nullable(),
+  birth_date: localDate.nullable(),
+  /** `null` when the caller did not say it — recorded as unknown, never inferred from the name. */
+  gender: z.enum(['female', 'male']).nullable(),
 });
 
 export const proposeBookingInput = z.strictObject({ patient_ref: ref, slot_ref: ref });
@@ -81,6 +86,7 @@ export const APPOINTMENT_TOOLS = {
   find_patient: {
     description:
       "Identify and verify the caller's patient record by national_id or phone (digits as spoken) plus birth_date (YYYY-MM-DD). " +
+      'Pass null for anything the caller has not said yet; never guess. ' +
       'Returns a patient ref and first name when verified; "multiple" means ask for the national ID; "not_verified" never says why.',
     input: findPatientInput,
   },
@@ -91,7 +97,7 @@ export const APPOINTMENT_TOOLS = {
   propose_registration: {
     description:
       'Prepare registering a NEW patient (only after find_patient did not verify them). Changes nothing yet: read back the returned details ' +
-      'and ask the caller for an explicit yes or no.',
+      'and ask the caller for an explicit yes or no. Pass null for any detail the caller has not said (gender included); never guess or use a placeholder.',
     input: proposeRegistrationInput,
   },
   propose_booking: {

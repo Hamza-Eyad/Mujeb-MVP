@@ -383,6 +383,43 @@ describe('AppointmentTools', () => {
     expect(await call('propose_booking', { patient_ref: patient, slot_ref: slot['ref'] })).toMatchObject({ status: 'confirmation_required' });
   });
 
+  it('asks for details the caller has not given instead of taking a guess, without using up verification attempts', async () => {
+    const { turn, system, ctx } = setup();
+    const call = turn('أبي أعرف مواعيدي');
+    for (let i = 0; i < 3; i += 1) {
+      expect(await call('find_patient', { national_id: '1000000500', phone: null, birth_date: null })).toMatchObject({ status: 'missing_information', missing: ['birth_date'] });
+    }
+    expect(await call('find_patient', { national_id: null, phone: null, birth_date: null })).toMatchObject({ status: 'missing_information', missing: ['national_id_or_phone', 'birth_date'] });
+    await verify(call, { national_id: '1000000500', birth_date: '1978-01-25' }); // not locked: nothing was checked
+
+    // Observed live: a birth date the caller never said was filled in as 1900-01-01.
+    const partial = { full_name: 'ريان سعيد الشمري', national_id: '1000000700', phone: null, birth_date: null, gender: null };
+    expect(await call('propose_registration', partial)).toMatchObject({ status: 'missing_information', missing: ['phone', 'birth_date'] });
+    expect(await system.findPatients(ctx, { nationalId: '1000000700' })).toEqual([]);
+  });
+
+  it('asks for the Gregorian date when a date of birth has a Hijri year (not supported yet), and keeps other bad dates generic', async () => {
+    const { turn } = setup();
+    const call = turn('مواليد ألف وأربعمية وثلاثة وثلاثين');
+    expect(await call('find_patient', { national_id: '1000000500', phone: null, birth_date: '1433-01-01' })).toMatchObject({ status: 'hijri_birth_date' });
+    const registration = { full_name: 'ريان سعيد الشمري', national_id: '1000000700', phone: '0500000107', gender: null };
+    expect(await call('propose_registration', { ...registration, birth_date: '1418-05-10' })).toMatchObject({ status: 'hijri_birth_date' });
+    expect(await call('find_patient', { national_id: '1000000500', phone: null, birth_date: '2999-01-01' })).toMatchObject({ status: 'invalid_birth_date' });
+    await verify(call, { national_id: '1000000500', birth_date: '1978-01-25' }); // none of these counted as a failed attempt
+  });
+
+  it('registers without a gender the caller did not give, and announces the result from the stored record', async () => {
+    const { turn, system, ctx } = setup();
+    let call = turn('أبي أفتح ملف');
+    const proposal = await call('propose_registration', { full_name: 'ريان سعيد الشمري', national_id: '1000000700', phone: '0500000107', birth_date: '1999-09-09', gender: null });
+    expect(proposal).toMatchObject({ status: 'confirmation_required', read_back: { gender: 'unknown' } });
+    call = turn('إيه');
+    const done = await call('confirm_pending_action', { action_ref: proposal['action_ref'], caller_answer: 'yes' });
+    expect(done).toMatchObject({ status: 'done', spoken: 'تم فتح الملف باسم ريان سعيد الشمري. تبي أخدمك بشي ثاني؟' });
+    const [record] = await system.findPatients(ctx, { nationalId: '1000000700' });
+    expect(record?.gender).toBe('unknown'); // never inferred from the name
+  });
+
   it('reports an existing national ID at registration as already_exists', async () => {
     const { turn } = setup();
     let call = turn('');
