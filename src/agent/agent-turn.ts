@@ -1,3 +1,4 @@
+import { normalizeArabic, tokenize } from '../core/arabic-text.js';
 import { AsyncQueue, abortReason, sleep } from '../core/async.js';
 import { ProviderError } from '../core/errors.js';
 import type { LanguageModel, LlmEvent, LlmRequest, ToolExchange, ToolResult, ToolSpec } from '../ports/language-model.js';
@@ -179,9 +180,10 @@ export class AgentTurn {
     let first = true;
     // The model tends to open a later round with the wait phrase the caller already heard (it sees it in the
     // history; observed live as "لحظة أشيك لك. لحظة أشيك لك."): hold the round's first words while they could
-    // be that phrase, and drop it if they are.
-    const phrase = this.o.waitPhrase?.trim() ?? '';
-    let held: string | undefined = this.waitPhraseSpoken && phrase !== '' ? '' : undefined;
+    // be that phrase, and drop it if they are. Compared word by word after normalizeArabic, so the model's
+    // spelling of it ("لحظة أشيك" for "لحظه أشيّك") still counts.
+    const phrase = tokenize(this.o.waitPhrase ?? '');
+    let held: string | undefined = this.waitPhraseSpoken && phrase.length > 0 ? '' : undefined;
     let roundText = '';
     const say = (text: string): void => {
       roundText += text;
@@ -196,8 +198,9 @@ export class AgentTurn {
           this.o.onLlmFirstEvent?.(round);
         }
         if (event.type === 'completed') {
-          if (held !== undefined && held !== '') say(held);
-          if (phrase !== '' && roundText.trimStart().startsWith(phrase)) this.waitPhraseSpoken = true;
+          // The round is over, so its last word is complete (the trailing space closes it).
+          if (held !== undefined && held !== '' && leadingPhrase(`${held} `, phrase).match !== 'yes') say(held);
+          if (phrase.length > 0 && leadingPhrase(`${roundText} `, phrase).match === 'yes') this.waitPhraseSpoken = true;
           return event;
         }
         if (held === undefined) {
@@ -205,12 +208,9 @@ export class AgentTurn {
           continue;
         }
         held += event.text;
-        const start = held.trimStart();
-        if (phrase.startsWith(start)) {
-          if (start === phrase) held = undefined; // the repeat is dropped; the rest of the round flows
-          continue;
-        }
-        const rest = start.startsWith(phrase) ? start.slice(phrase.length) : held;
+        const found = leadingPhrase(held, phrase);
+        if (found.match === 'maybe') continue;
+        const rest = found.match === 'yes' ? held.slice(found.end) : held; // the repeat is dropped; the rest of the round flows
         held = undefined;
         if (rest !== '') say(rest);
       }
@@ -239,4 +239,28 @@ export class AgentTurn {
     this.o.onTool?.({ phase: 'end', round, name: call.name, callId: call.callId, outcome: result.outcome, ms });
     return { result: { callId: call.callId, output: JSON.stringify(result.output) }, ...(result.speech !== undefined ? { speech: result.speech } : {}) };
   }
+}
+
+const WORD = /[\p{L}\p{N}\p{M}]+/gu;
+
+/**
+ * Whether `text` opens with `phrase` (its normalized words, see tokenize). Words are compared after
+ * normalizeArabic, and a word counts only once something follows it ("لك" must not match the start of "لكم").
+ * `maybe`: the text so far could still become the phrase. `end`: where the phrase and the punctuation and
+ * spaces after it end in `text`.
+ */
+function leadingPhrase(text: string, phrase: readonly string[]): { match: 'yes'; end: number } | { match: 'maybe' | 'no' } {
+  if (phrase.length === 0) return { match: 'no' };
+  let matched = 0;
+  for (const m of text.matchAll(WORD)) {
+    const word = normalizeArabic(m[0]);
+    if (word === '') continue;
+    const expected = phrase[matched] ?? '';
+    const end = m.index + m[0].length;
+    if (end === text.length) return { match: expected.startsWith(word) ? 'maybe' : 'no' }; // the word may still grow
+    if (word !== expected) return { match: 'no' };
+    matched += 1;
+    if (matched === phrase.length) return { match: 'yes', end: end + (/^[^\p{L}\p{N}\p{M}]*/u.exec(text.slice(end))?.[0].length ?? 0) };
+  }
+  return { match: 'maybe' };
 }

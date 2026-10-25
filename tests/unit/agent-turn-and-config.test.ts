@@ -120,6 +120,27 @@ describe('AgentTurn', () => {
     // Words that only start the same way are kept as they are.
     expect(await spoken(undefined, 'لحظة واحدة، عندي ثلاث أوقات.')).toContain('لحظة واحدة، عندي ثلاث أوقات.');
   });
+
+  it('drops the repeated wait phrase however the model spells it, but only as whole words', async () => {
+    const phrase = 'لحظه أشيّك لك.'; // spelled for TTS; the model tends to write "لحظة أشيك لك."
+    const spoken = async (firstRoundText: string | undefined, secondRoundText: string): Promise<string> => {
+      const llm = new FakeLanguageModel({
+        firstTokenDelayMs: 0,
+        tokenDelayMs: 0,
+        script: (_r, round) => (round === 0 ? { ...(firstRoundText !== undefined ? { text: firstRoundText } : {}), toolCalls: [{ name: 'read', arguments: {} }] } : { text: secondRoundText }),
+      });
+      const agent = new AgentTurn({ ...base(llm, toolbox().box, new AbortController().signal), waitPhrase: phrase });
+      return (await drainOutput(agent)).map((o) => (o.type === 'text' ? o.text : ' | ')).join('');
+    };
+
+    expect(await spoken(undefined, 'لحظة أشيك لك. عندي ثلاث أوقات.')).toBe('لحظه أشيّك لك. | عندي ثلاث أوقات.');
+    expect(await spoken(undefined, 'لحظة، أشيك لك عندي ثلاث أوقات.')).toBe('لحظه أشيّك لك. | عندي ثلاث أوقات.');
+    expect(await spoken(undefined, 'لحظة أشيك لك')).toBe('لحظه أشيّك لك. | '); // the whole round was the repeat
+    // The model said it first (its own spelling), then again in the next round.
+    expect(await spoken('لحظة أشيك لك.', 'لحظه أشيّك لك. عندي ثلاث أوقات.')).toBe('لحظة أشيك لك. | عندي ثلاث أوقات.');
+    // "لكم" is not "لك": the words are kept.
+    expect(await spoken(undefined, 'لحظة أشيك لكم المواعيد.')).toBe('لحظه أشيّك لك. | لحظة أشيك لكم المواعيد.');
+  });
 });
 
 describe('text chunker flush', () => {
