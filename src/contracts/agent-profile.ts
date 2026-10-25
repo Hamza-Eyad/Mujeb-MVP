@@ -25,6 +25,8 @@ export const agentProfileSchema = z
     displayName: z.string().min(1),
     languageCode: z.string().min(2),
     greeting: z.string().min(1).optional(),
+    /** The clinic's TTS voice. Absent: the environment default (MUJEEB_TTS_VOICE_ID). */
+    voiceId: z.string().trim().min(1).optional(),
     instructionsFile: z.string().min(1),
     historyMaxTurns: z.number().int().min(1).max(50).default(12),
     /** The clinic's IANA time zone (e.g. Asia/Riyadh). Required with appointment tools. */

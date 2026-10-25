@@ -40,7 +40,7 @@ npm run dev:fake       # ثم افتح http://127.0.0.1:8787
 هذا الوضع مفيد لاختبار المقاطعة والواجهة والأزمنة المحلية.
 
 **مع المزودين الحقيقيين:**
-1. انسخ `.env.example` إلى `.env`، ثم املأ المفاتيح و`MUJEEB_LLM_MODEL` و`MUJEEB_TTS_MODEL` و`MUJEEB_TTS_VOICE_ID`.
+1. انسخ `.env.example` إلى `.env`، ثم املأ المفاتيح و`MUJEEB_LLM_MODEL` و`MUJEEB_TTS_MODEL` و`MUJEEB_TTS_VOICE_ID` (أو ضع `voiceId` في `profile.json` الخاص بالعيادة، وهو يتغلب على `.env`).
 2. شغّل `npm run probe:elevenlabs`. يتحقق من حساب ElevenLabs الفعلي: هل `turn_prediction` و Zero Retention مطبقة فعلًا، ويختبر TTS مع رحلة ذهاب وعودة TTS→STT.
 3. شغّل `npm run dev` وافتح `http://127.0.0.1:8787`.
 4. اختبر بسماعة رأس أولًا، ثم نفّذ مصفوفة الاختبار اليدوية في [docs/MANUAL_VOICE_TESTS.md](docs/MANUAL_VOICE_TESTS.md).

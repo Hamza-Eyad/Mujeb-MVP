@@ -8,6 +8,7 @@ import { MedplumClient } from '../adapters/medplum/client.js';
 import { MedplumSchedulingSystem } from '../adapters/medplum/medplum-scheduling.js';
 import { OpenAiResponsesModel } from '../adapters/openai/responses-model.js';
 import type { Settings } from '../config/settings.js';
+import type { AgentProfile } from '../contracts/agent-profile.js';
 import { ConfigError } from '../core/errors.js';
 import type { Logger } from '../core/logger.js';
 import type { LanguageModel } from '../ports/language-model.js';
@@ -29,6 +30,11 @@ export interface Providers {
   stt: SpeechToText;
   llm: LanguageModel;
   tts: TextToSpeech;
+}
+
+/** The clinic profile's voice wins over the environment default (MUJEEB_TTS_VOICE_ID). */
+export function applyProfileVoice(s: Settings, profile: Pick<AgentProfile, 'voiceId'>): Settings {
+  return profile.voiceId === undefined ? s : { ...s, tts: { ...s.tts, voiceId: profile.voiceId } };
 }
 
 export function createProviders(settings: Settings): Providers {
@@ -81,11 +87,14 @@ export async function createScheduling(s: Settings, tenantId: string, log?: Logg
 
 function createTts(s: Settings): TextToSpeech {
   if (s.tts.provider === 'fake') return new FakeTextToSpeech();
+  if (s.tts.voiceId === undefined) {
+    throw new ConfigError('No TTS voice: set "voiceId" in the clinic profile (profile.json), or MUJEEB_TTS_VOICE_ID in .env as the default');
+  }
   return new ElevenLabsTts({
     apiKey: required(s.elevenlabs.apiKey, 'ELEVENLABS_API_KEY'),
     baseUrl: s.elevenlabs.baseUrl,
     model: required(s.tts.model, 'MUJEEB_TTS_MODEL'),
-    voiceId: required(s.tts.voiceId, 'MUJEEB_TTS_VOICE_ID'),
+    voiceId: s.tts.voiceId,
     zeroRetention: s.elevenlabs.zeroRetention,
   });
 }

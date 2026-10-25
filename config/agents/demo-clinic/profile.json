@@ -13,6 +13,6 @@
     "maxToolRounds": 5,
     "pendingActionTtlSec": 120,
     "maxReconfirmations": 2,
-    "waitPhrase": "لحظة أشيك لك."
+    "waitPhrase": "لحظه أشيّك لك."
   }
 }

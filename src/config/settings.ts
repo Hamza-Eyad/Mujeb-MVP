@@ -191,10 +191,8 @@ export function loadSettings(env: NodeJS.ProcessEnv, options?: { forceFakeProvid
     if (!settings.elevenlabs.apiKey) missing.push('ELEVENLABS_API_KEY');
   }
   if (settings.stt.provider === 'elevenlabs' && !settings.stt.model) missing.push('MUJEEB_STT_MODEL');
-  if (settings.tts.provider === 'elevenlabs') {
-    if (!settings.tts.model) missing.push('MUJEEB_TTS_MODEL');
-    if (!settings.tts.voiceId) missing.push('MUJEEB_TTS_VOICE_ID');
-  }
+  // The voice is not required here: the clinic profile may name it (see applyProfileVoice in app/container.ts).
+  if (settings.tts.provider === 'elevenlabs' && !settings.tts.model) missing.push('MUJEEB_TTS_MODEL');
   if (settings.scheduling.provider === 'medplum') {
     if (!settings.medplum.clientId) missing.push('MEDPLUM_CLIENT_ID (needed by MUJEEB_SCHEDULING_PROVIDER=medplum)');
     if (!settings.medplum.clientSecret) missing.push('MEDPLUM_CLIENT_SECRET (needed by MUJEEB_SCHEDULING_PROVIDER=medplum)');

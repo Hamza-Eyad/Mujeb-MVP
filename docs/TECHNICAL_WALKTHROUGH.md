@@ -171,8 +171,8 @@ tests/             unit / integration / contract / architecture / live / support
 
 1. `loadSettings(process.env, { forceFakeProviders })` ← يقرأ ويتحقق من كل المتغيرات (قسم 12). أي نقص يرمي `ConfigError` برسالة تذكر اسم المتغير بدون قيمته.
 2. `createJsonLogger({ level })` ← logger JSON.
-3. يسجل `app.config` (إعدادات بدون أسرار) و`privacy.retention_mode`.
-4. `loadAgentProfile(settings.agentProfilePath)` (`src/app/agent-profile.ts`) ← يقرأ `profile.json`، ويقرأ `instructions.md` و`tools.md` من داخل نفس المجلد فقط (دالة `readInside` تمنع الخروج من المجلد).
+3. `loadAgentProfile(settings.agentProfilePath)` (`src/app/agent-profile.ts`) ← يقرأ `profile.json`، ويقرأ `instructions.md` و`tools.md` من داخل نفس المجلد فقط (دالة `readInside` تمنع الخروج من المجلد).
+4. `applyProfileVoice(settings, profile)` (`container.ts`) ← إذا حدد ملف العيادة `voiceId` يتغلب على `MUJEEB_TTS_VOICE_ID`. ثم يسجل `app.config` (إعدادات بدون أسرار، مع `voice_from_profile`) و`privacy.retention_mode`. إذا ما فيه صوت في الاثنين يرمي `createTts` خطأ `ConfigError` يذكر المكانين.
 5. `createScheduling(settings, profile.tenantId, log)` (`container.ts`) ← يرجع `MemorySchedulingSystem` أو `MedplumSchedulingSystem` أو `undefined` (لو `none`). **نسخة واحدة تُشارَك بين كل الجلسات** (مثل نظام مستشفى حقيقي).
 6. إذا فيه scheduling يسجل `privacy.verification_policy` مع `production_grade: false`.
 7. `new JsonlTurnSink(settings.log.dir)` ← يفتح `logs/turns-YYYY-MM-DD.jsonl` للإلحاق.
@@ -886,7 +886,7 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 | أسرار | `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `MEDPLUM_CLIENT_ID`, `MEDPLUM_CLIENT_SECRET` |
 | النموذج | `MUJEEB_LLM_PROVIDER` (openai|fake)، `MUJEEB_LLM_MODEL`، `..._REASONING_EFFORT`، `..._FIRST_TOKEN_TIMEOUT_MS` (8000)، `..._MAX_OUTPUT_TOKENS`، `..._MAX_OUTPUT_TOKENS_TOOLS` (1024)، `..._ASSISTANT_PHASE` (true) |
 | STT | `MUJEEB_STT_PROVIDER`، `..._MODEL`، `..._LANGUAGE` (ar)، `..._COMMIT_STRATEGY` (vad)، `..._VAD_SILENCE_SECS` (0.8، بين 0.2 و3)، `..._CHUNK_MS` (100) |
-| TTS | `MUJEEB_TTS_PROVIDER`، `..._MODEL`، `..._VOICE_ID`، `..._FIRST_AUDIO_TIMEOUT_MS` (5000) |
+| TTS | `MUJEEB_TTS_PROVIDER`، `..._MODEL`، `..._VOICE_ID` (الصوت الافتراضي، و`voiceId` في ملف العيادة يتغلب عليه)، `..._FIRST_AUDIO_TIMEOUT_MS` (5000) |
 | سلوك الجلسة | `MUJEEB_DUPLEX_MODE` (full)، `..._FALSE_INTERRUPTION_TIMEOUT_MS` (1500)، `..._ECHO_TAIL_MS` (1200)، `..._TOOL_CONFIRM_GRACE_MS` (400) |
 | المواعيد | `MUJEEB_SCHEDULING_PROVIDER` (memory|medplum|none)، `..._DATASET`، `..._TIMEOUT_MS` (4000)، `..._WRITE_TIMEOUT_MS` (8000)، `..._DIRECTORY_TTL_SEC` (300) |
 | Medplum | `MUJEEB_MEDPLUM_BASE_URL`، `MUJEEB_MEDPLUM_NATIONAL_ID_SYSTEM` |
@@ -901,7 +901,7 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 ### 12.3 العقود (`src/contracts/`)
 
 - **`appointment-tools.ts`:** مخطط zod `strictObject` لكل أداة من التسع (كل الحقول مطلوبة، والاختياري `nullable()` كما يتطلب strict function calling). `toolParametersJsonSchema` يحوّلها لـJSON Schema عبر `z.toJSONSchema`. `parseToolArguments` يتحقق من الوسائط الخام ويرجع وصف مشكلة آمن للنموذج.
-- **`agent-profile.ts`:** مخطط البروفايل: `tenantId`, `agentId`, `greeting`, `historyMaxTurns` (1–50)، `timezone` (يُتحقق أنها IANA)، و`appointmentTools` (`patientVerification` قيمة واحدة مسموحة الآن `'dev-identifier-dob'`، `maxToolRounds` 1–8، `pendingActionTtlSec` 15–600، `maxReconfirmations` 0–5، `waitPhrase`، `allowedTools`). و`refine`: `timezone` إلزامي مع الأدوات.
+- **`agent-profile.ts`:** مخطط البروفايل: `tenantId`, `agentId`, `greeting`, `voiceId` (اختياري، صوت العيادة)، `historyMaxTurns` (1–50)، `timezone` (يُتحقق أنها IANA)، و`appointmentTools` (`patientVerification` قيمة واحدة مسموحة الآن `'dev-identifier-dob'`، `maxToolRounds` 1–8، `pendingActionTtlSec` 15–600، `maxReconfirmations` 0–5، `waitPhrase`، `allowedTools`). و`refine`: `timezone` إلزامي مع الأدوات.
 - **`dev-client-protocol.ts`:** رسائل المتصفح ← الخادم (`hello`, `mark`, `playback_started`, `playback_cleared`, `pong`) مفحوصة بـzod، والخادم ← المتصفح (`session_started`, `mark`, `clear`, `pause`, `resume`, `ping`, `event`, `error`).
 - **`scheduling-dataset.ts`:** مخطط ملف البيانات الاصطناعية.
 
