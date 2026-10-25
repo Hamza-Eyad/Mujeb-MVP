@@ -7,6 +7,7 @@ import { type AgentOutput, type AgentToolbox, AgentTurn } from '../../src/agent/
 import { Conversation } from '../../src/agent/conversation.js';
 import type { ToolTurnContext } from '../../src/agent/tools/appointment-tools.js';
 import { loadAgentProfile } from '../../src/app/agent-profile.js';
+import { applyProfileVoice, createProviders } from '../../src/app/container.js';
 import { loadSettings } from '../../src/config/settings.js';
 import { CancelledError, ConfigError } from '../../src/core/errors.js';
 import { CHUNK_FLUSH, chunkText } from '../../src/voice/text-chunker.js';
@@ -168,5 +169,34 @@ describe('Phase 1 configuration', () => {
     await expect(loadAgentProfile(write({ timezone: 'Asia/Riyadh', appointmentTools: { ...tools, patientVerification: 'otp' } }))).rejects.toBeInstanceOf(ConfigError);
     await expect(loadAgentProfile(write({ timezone: 'Asia/Riyadh', appointmentTools: { ...tools, instructionsFile: '../tools.md' } }))).rejects.toThrow(/inside the profile directory/);
     expect((await loadAgentProfile(write({ timezone: 'Asia/Riyadh', appointmentTools: tools }))).appointmentTools?.instructions).toBe('y');
+    expect((await loadAgentProfile(write({ voiceId: 'clinic-voice' }))).voiceId).toBe('clinic-voice');
+    await expect(loadAgentProfile(write({ voiceId: ' ' }))).rejects.toThrow(/voiceId/);
+  });
+});
+
+describe('clinic voice', () => {
+  const env = (voice?: string) =>
+    loadSettings({
+      ELEVENLABS_API_KEY: 'k',
+      MUJEEB_LLM_PROVIDER: 'fake',
+      MUJEEB_STT_PROVIDER: 'fake',
+      MUJEEB_TTS_MODEL: 'tts-model',
+      ...(voice !== undefined ? { MUJEEB_TTS_VOICE_ID: voice } : {}),
+    });
+
+  it('uses the clinic profile voice over the environment default', () => {
+    expect(applyProfileVoice(env('env-voice'), { voiceId: 'clinic-voice' }).tts.voiceId).toBe('clinic-voice');
+    expect(applyProfileVoice(env(), { voiceId: 'clinic-voice' }).tts.voiceId).toBe('clinic-voice');
+  });
+
+  it('falls back to MUJEEB_TTS_VOICE_ID when the profile names no voice', () => {
+    const settings = applyProfileVoice(env('env-voice'), {});
+    expect(settings.tts.voiceId).toBe('env-voice');
+    expect(() => createProviders(settings)).not.toThrow();
+  });
+
+  it('refuses to start without a voice in either place, and says where to set one', () => {
+    expect(() => createProviders(applyProfileVoice(env(), {}))).toThrow(ConfigError);
+    expect(() => createProviders(applyProfileVoice(env(), {}))).toThrow(/profile\.json.*MUJEEB_TTS_VOICE_ID/);
   });
 });

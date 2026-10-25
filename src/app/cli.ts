@@ -6,7 +6,7 @@ import { ConfigError } from '../core/errors.js';
 import { createJsonLogger } from '../observability/logger.js';
 import { JsonlTurnSink } from '../observability/turn-metrics.js';
 import { loadAgentProfile } from './agent-profile.js';
-import { buildSessionConfig, createProviders, createScheduling } from './container.js';
+import { applyProfileVoice, buildSessionConfig, createProviders, createScheduling } from './container.js';
 import { startDevServer } from './dev-server.js';
 import { runElevenLabsProbe } from './elevenlabs-probe.js';
 import { buildLatencyReport, formatLatencyReport } from './latency-report.js';
@@ -15,16 +15,17 @@ import { runSeedCommand } from './medplum-seed-command.js';
 const STATIC_DIR = fileURLToPath(new URL('../../web/dev-client', import.meta.url));
 
 async function serve(fake: boolean): Promise<void> {
-  const settings = loadSettings(process.env, { forceFakeProviders: fake });
-  const log = createJsonLogger({ level: settings.log.level });
-  log.info('app.config', describeSettings(settings));
+  const envSettings = loadSettings(process.env, { forceFakeProviders: fake });
+  const log = createJsonLogger({ level: envSettings.log.level });
+  const profile = await loadAgentProfile(envSettings.agentProfilePath);
+  const settings = applyProfileVoice(envSettings, profile);
+  log.info('app.config', { ...describeSettings(settings), voice_from_profile: profile.voiceId !== undefined });
   log.info('privacy.retention_mode', {
     openai_store: false,
     elevenlabs_zero_retention_requested: settings.elevenlabs.zeroRetention,
     transcripts_in_logs: settings.log.transcripts,
     reminder: 'Phase 0: never use real patient data. Zero retention is Enterprise-only — verify with npm run probe:elevenlabs.',
   });
-  const profile = await loadAgentProfile(settings.agentProfilePath);
   const scheduling = await createScheduling(settings, profile.tenantId, log);
   if (scheduling && !profile.appointmentTools) {
     throw new ConfigError('MUJEEB_SCHEDULING_PROVIDER enables appointment tools, but the agent profile has no appointmentTools section');
@@ -76,7 +77,9 @@ async function serve(fake: boolean): Promise<void> {
 }
 
 async function probe(): Promise<void> {
-  const settings = loadSettings({ ...process.env, MUJEEB_LLM_PROVIDER: 'fake' });
+  const envSettings = loadSettings({ ...process.env, MUJEEB_LLM_PROVIDER: 'fake' });
+  // Probe the voice the clinic would actually use.
+  const settings = applyProfileVoice(envSettings, await loadAgentProfile(envSettings.agentProfilePath));
   const log = createJsonLogger({ level: 'warn' });
   const result = await runElevenLabsProbe(settings, log);
   mkdirSync(settings.log.dir, { recursive: true });

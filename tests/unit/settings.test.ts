@@ -21,9 +21,15 @@ describe('loadSettings', () => {
     }
     expect(error).toBeInstanceOf(ConfigError);
     const message = (error as Error).message;
-    for (const name of ['OPENAI_API_KEY', 'MUJEEB_LLM_MODEL', 'ELEVENLABS_API_KEY', 'MUJEEB_STT_MODEL', 'MUJEEB_TTS_MODEL', 'MUJEEB_TTS_VOICE_ID']) {
+    for (const name of ['OPENAI_API_KEY', 'MUJEEB_LLM_MODEL', 'ELEVENLABS_API_KEY', 'MUJEEB_STT_MODEL', 'MUJEEB_TTS_MODEL']) {
       expect(message).toContain(name);
     }
+  });
+
+  it('does not require MUJEEB_TTS_VOICE_ID: the clinic profile may name the voice', () => {
+    const { MUJEEB_TTS_VOICE_ID: _voice, ...withoutVoice } = LIVE_ENV;
+    expect(loadSettings(withoutVoice).tts.voiceId).toBeUndefined();
+    expect(loadSettings(LIVE_ENV).tts.voiceId).toBe('voice-from-env');
   });
 
   it('never includes secret values in validation errors', () => {
