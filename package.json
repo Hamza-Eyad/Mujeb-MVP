@@ -17,6 +17,8 @@
     "check": "npm run typecheck && npm run lint && npm run test",
     "dev": "npm run build && node --env-file-if-exists=.env dist/app/cli.js serve",
     "dev:fake": "npm run build && node --env-file-if-exists=.env dist/app/cli.js serve --fake",
+    "telephony": "npm run build && node --env-file-if-exists=.env dist/app/cli.js telephony",
+    "telephony:fake": "npm run build && node --env-file-if-exists=.env dist/app/cli.js telephony --fake",
     "probe:elevenlabs": "npm run build && node --env-file-if-exists=.env dist/app/cli.js probe-elevenlabs",
     "report": "npm run build && node --env-file-if-exists=.env dist/app/cli.js report",
     "seed:medplum": "npm run build && node --env-file-if-exists=.env dist/app/cli.js seed-medplum"

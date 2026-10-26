@@ -1,54 +1,44 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describeSettings, loadSettings } from '../config/settings.js';
+import { type Settings, describeSettings, loadSettings } from '../config/settings.js';
 import { ConfigError } from '../core/errors.js';
+import type { Logger } from '../core/logger.js';
 import { createJsonLogger } from '../observability/logger.js';
-import { JsonlTurnSink } from '../observability/turn-metrics.js';
+import { JsonlTurnSink, type TurnSummarySink } from '../observability/turn-metrics.js';
 import { loadAgentProfile } from './agent-profile.js';
+import { CallRouter, loadCallRoutes } from './call-router.js';
 import { applyProfileVoice, buildSessionConfig, createProviders, createScheduling } from './container.js';
 import { startDevServer } from './dev-server.js';
+import type { AgentRuntime } from './session-factory.js';
+import { startTelephonyServer } from './telephony-server.js';
 import { runElevenLabsProbe } from './elevenlabs-probe.js';
 import { buildLatencyReport, formatLatencyReport } from './latency-report.js';
 import { runSeedCommand } from './medplum-seed-command.js';
 
 const STATIC_DIR = fileURLToPath(new URL('../../web/dev-client', import.meta.url));
 
-async function serve(fake: boolean): Promise<void> {
-  const envSettings = loadSettings(process.env, { forceFakeProviders: fake });
-  const log = createJsonLogger({ level: envSettings.log.level });
-  const profile = await loadAgentProfile(envSettings.agentProfilePath);
+/** One clinic's agent, ready to run sessions: its profile, its voice, its providers and its scheduling system. */
+async function buildAgentRuntime(envSettings: Settings, profilePath: string, metrics: TurnSummarySink, log: Logger): Promise<{ runtime: AgentRuntime; settings: Settings }> {
+  const profile = await loadAgentProfile(profilePath);
   const settings = applyProfileVoice(envSettings, profile);
-  log.info('app.config', { ...describeSettings(settings), voice_from_profile: profile.voiceId !== undefined });
-  log.info('privacy.retention_mode', {
-    openai_store: false,
-    elevenlabs_zero_retention_requested: settings.elevenlabs.zeroRetention,
-    transcripts_in_logs: settings.log.transcripts,
-    reminder: 'Phase 0: never use real patient data. Zero retention is Enterprise-only — verify with npm run probe:elevenlabs.',
-  });
   const scheduling = await createScheduling(settings, profile.tenantId, log);
   if (scheduling && !profile.appointmentTools) {
     throw new ConfigError('MUJEEB_SCHEDULING_PROVIDER enables appointment tools, but the agent profile has no appointmentTools section');
   }
   if (scheduling && profile.appointmentTools) {
     log.info('privacy.verification_policy', {
+      tenant_id: profile.tenantId,
       policy: profile.appointmentTools.patientVerification,
       production_grade: false,
       reminder: 'Development-only patient verification (DECISIONS A17). Synthetic scheduling data only.',
     });
   }
-  const metrics = new JsonlTurnSink(settings.log.dir);
-  const server = await startDevServer({
-    host: settings.dev.host,
-    port: settings.dev.port,
-    staticDir: STATIC_DIR,
-    maxSessions: 2,
+  const runtime: AgentRuntime = {
     profile,
     providers: createProviders(settings),
     sessionConfig: buildSessionConfig(settings),
     metrics,
-    log,
-    displayConfig: describeSettings(settings),
     ...(scheduling
       ? {
           scheduling: {
@@ -59,21 +49,88 @@ async function serve(fake: boolean): Promise<void> {
           },
         }
       : {}),
-  });
-  process.stderr.write(`\nمُجيب dev server: ${server.url}  (providers: ${fake ? 'FAKE' : `${settings.stt.provider}/${settings.llm.provider}/${settings.tts.provider}`}; appointment tools: ${scheduling ? scheduling.name : 'off'})\n\n`);
+  };
+  return { runtime, settings };
+}
 
+function logPrivacyMode(settings: Settings, log: Logger): void {
+  log.info('privacy.retention_mode', {
+    openai_store: false,
+    elevenlabs_zero_retention_requested: settings.elevenlabs.zeroRetention,
+    transcripts_in_logs: settings.log.transcripts,
+    reminder: 'Never use real patient data. Zero retention is Enterprise-only — verify with npm run probe:elevenlabs.',
+  });
+}
+
+function onShutdown(log: Logger, close: () => Promise<void>): void {
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info('app.shutdown', { signal });
-    void server
-      .close()
-      .then(() => metrics.close())
-      .finally(() => process.exit(0));
+    void close().finally(() => process.exit(0));
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+function providersLabel(settings: Settings, fake: boolean): string {
+  return fake ? 'FAKE' : `${settings.stt.provider}/${settings.llm.provider}/${settings.tts.provider}`;
+}
+
+async function serve(fake: boolean): Promise<void> {
+  const envSettings = loadSettings(process.env, { forceFakeProviders: fake });
+  const log = createJsonLogger({ level: envSettings.log.level });
+  const metrics = new JsonlTurnSink(envSettings.log.dir);
+  const { runtime, settings } = await buildAgentRuntime(envSettings, envSettings.agentProfilePath, metrics, log);
+  log.info('app.config', { ...describeSettings(settings), voice_from_profile: runtime.profile.voiceId !== undefined });
+  logPrivacyMode(settings, log);
+  const server = await startDevServer({
+    host: settings.dev.host,
+    port: settings.dev.port,
+    staticDir: STATIC_DIR,
+    maxSessions: 2,
+    ...runtime,
+    log,
+    displayConfig: describeSettings(settings),
+  });
+  process.stderr.write(`\nمُجيب dev server: ${server.url}  (providers: ${providersLabel(settings, fake)}; appointment tools: ${runtime.scheduling ? runtime.scheduling.system.name : 'off'})\n\n`);
+  onShutdown(log, () => server.close().then(() => metrics.close()));
+}
+
+/** The telephony gateway: Asterisk connects one WebSocket per call; each dialed number routes to a clinic profile. */
+async function telephony(fake: boolean): Promise<void> {
+  const settings = loadSettings(process.env, { forceFakeProviders: fake });
+  const { telephony: t } = settings;
+  if (t.password === undefined) {
+    throw new ConfigError('MUJEEB_TELEPHONY_PASSWORD is required: the shared secret Asterisk sends (websocket_client.conf username/password).');
+  }
+  const log = createJsonLogger({ level: settings.log.level });
+  log.info('app.config', describeSettings(settings));
+  logPrivacyMode(settings, log);
+  const metrics = new JsonlTurnSink(settings.log.dir);
+  const routes = await loadCallRoutes(t.routesPath);
+  const byProfile = new Map<string, AgentRuntime>();
+  const entries: Array<[string, AgentRuntime]> = [];
+  for (const route of routes.routes) {
+    let runtime = byProfile.get(route.agentProfile);
+    if (runtime === undefined) {
+      runtime = (await buildAgentRuntime(settings, route.agentProfile, metrics, log)).runtime;
+      byProfile.set(route.agentProfile, runtime);
+    }
+    entries.push([route.key, runtime]);
+  }
+  const server = await startTelephonyServer({
+    host: t.host,
+    port: t.port,
+    credentials: { username: t.username, password: t.password },
+    maxCalls: t.maxCalls,
+    callStartTimeoutMs: t.callStartTimeoutMs,
+    router: new CallRouter(entries),
+    log,
+  });
+  process.stderr.write(`\nمُجيب telephony gateway: ${server.url}  (routes: ${entries.length}; max calls: ${t.maxCalls}; providers: ${providersLabel(settings, fake)})\n\n`);
+  onShutdown(log, () => server.close().then(() => metrics.close()));
 }
 
 async function probe(): Promise<void> {
@@ -171,6 +228,9 @@ async function main(): Promise<void> {
     case 'serve':
       await serve(args.includes('--fake'));
       return;
+    case 'telephony':
+      await telephony(args.includes('--fake'));
+      return;
     case 'probe-elevenlabs':
       await probe();
       return;
@@ -181,7 +241,7 @@ async function main(): Promise<void> {
       await seedMedplum(args);
       return;
     default:
-      process.stderr.write('usage: cli.js <serve [--fake] | probe-elevenlabs | report [--since YYYY-MM-DD] | seed-medplum [--apply] [--reset-appointments]>\n');
+      process.stderr.write('usage: cli.js <serve [--fake] | telephony [--fake] | probe-elevenlabs | report [--since YYYY-MM-DD] | seed-medplum [--apply] [--reset-appointments]>\n');
       process.exitCode = 2;
   }
 }
