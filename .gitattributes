@@ -1,0 +1,4 @@
+# Shell scripts and Asterisk configs run inside Linux (WSL or a server): keep LF on every checkout,
+# whatever core.autocrlf says, or bash fails on "\r".
+*.sh text eol=lf
+deploy/asterisk/** text eol=lf

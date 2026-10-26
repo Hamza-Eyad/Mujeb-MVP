@@ -4,11 +4,13 @@
 
 ## الحالة الحالية
 
-نحن حاليًا في مرحلة MVP محلي يختبر قلب تجربة الصوت قبل ربط الهاتف أو الأنظمة الصحية:
+- **Phase 0 (منفذة):** حلقة صوتية محلية: `Microphone -> STT -> LLM/Orchestrator -> TTS -> Speaker`.
+- **Phase 1 (منفذة):** أدوات المواعيد على نظام مواعيد تجريبي (Medplum sandbox) ببيانات اصطناعية فقط، مع تأكيد المتصل قبل أي كتابة.
+- **Phase 4، الخطوة 1 (منفذة، 2026-10-25):** نفس المحرك يستقبل مكالمات عبر Asterisk في **مختبر محلي فقط**. المسار: softphone ‏(MicroSIP) ← Asterisk ‏(WSL) ← `chan_websocket` ← مُجيب.
+  - لا يوجد بعد خط اتصالات تجاري، ولا رقم حقيقي، ولا خادم سحابي.
+  - القرار: [DECISIONS.md](docs/DECISIONS.md) A19. والخطوات التالية في [ROADMAP.md](docs/ROADMAP.md).
 
-`Microphone -> STT -> LLM/Orchestrator -> TTS -> Speaker`
-
-الهدف من هذه المرحلة هو قياس جودة التعرف، الفهم، سرعة الاستجابة، طبيعية الصوت، واستقرار الـstreaming، مع بناء أساس هندسي يمكن توسيعه لاحقًا بدل كتابة نموذج تجريبي يتم التخلص منه.
+المبدأ: الـMVP صغير في النطاق، لكنه أساس هندسي يُوسَّع، وليس نموذجًا تجريبيًا يُرمى.
 
 ## ابدأ من هنا
 
@@ -54,6 +56,16 @@ npm run dev:fake       # ثم افتح http://127.0.0.1:8787
 - المريض يتحقق برقم الهوية أو الجوال مع تاريخ الميلاد (سياسة تطوير فقط). مرضى الـseed موجودون في `config/test-data/demo-clinic.dataset.json`.
 - مصفوفة الاختبار اليدوي بالمايك: [docs/MANUAL_SCHEDULING_TESTS.md](docs/MANUAL_SCHEDULING_TESTS.md).
 
+**الهاتف في المختبر المحلي (Phase 4):**
+- **ليس ربطًا تجاريًا:** ‏Asterisk في WSL على `127.0.0.1` فقط، وMicroSIP كهاتف تجريبي.
+- التجهيز الكامل (بناء Asterisk، والإعدادات، وكلمات السر، وMicroSIP) في [deploy/asterisk/lab/README.md](deploy/asterisk/lab/README.md).
+- أضف إلى `.env`: ‏`MUJEEB_TELEPHONY_PASSWORD`، وهو السر المشترك مع Asterisk، ويولّده `setup-lab.sh`.
+- التشغيل:
+  - `npm run telephony` للمزودين الحقيقيين.
+  - `npm run telephony:fake` بدون مفاتيح.
+- ثم اتصل من MicroSIP على **300**.
+- الرقم المتصَل عليه يُوجَّه إلى profile العيادة من [config/telephony/routes.json](config/telephony/routes.json)، والرقم غير المعروف يُرفض.
+
 **القياس:**
 - `npm run report` يعرض p50 وp90 وp95 لكل مرحلة، من ملفات `logs/turns-*.jsonl`.
 - `npm run test:live` يشغّل اختبارات اختيارية مدفوعة على المزودين الحقيقيين. اختبارات Medplum الحية تحتاج أيضًا `MUJEEB_LIVE_MEDPLUM=1`، وتكتب بيانات اختبار اصطناعية في الـsandbox ثم تلغي مواعيدها.
@@ -68,9 +80,10 @@ npm run dev:fake       # ثم افتح http://127.0.0.1:8787
 | `src/ports` | واجهات: `AudioTransport` و`SpeechToText` و`LanguageModel` و`TextToSpeech` |
 | `src/voice` | `VoiceSession`: الأدوار والمقاطعة والتقطيع والـVAD وسياسة الـbarge-in |
 | `src/agent` | سجل المحادثة وبناء الطلب، بدون أي معرفة بالصوت |
-| `src/adapters` | OpenAI وElevenLabs والمتصفح والـfakes. الكود الوحيد الذي يعرف المزودين |
-| `src/app` | الـcomposition root والخادم المحلي والـCLI |
+| `src/adapters` | OpenAI وElevenLabs وMedplum والمتصفح وAsterisk (`telephony/asterisk`) والـfakes. الكود الوحيد الذي يعرف المزودين |
+| `src/app` | الـcomposition root، وخادم المتصفح المحلي، وخادم المكالمات (`telephony-server.ts`)، والتوجيه، والـCLI |
 | `web/dev-client` | واجهة الاختبار: التقاط وتشغيل وعرض فقط، بلا مفاتيح وبلا منطق |
+| `deploy/asterisk/lab` | المختبر المحلي: بناء Asterisk وإعداداته، بدون أسرار |
 
 حدود الاستيراد بين المجلدات يفرضها `tests/architecture/boundaries.test.ts`.
 

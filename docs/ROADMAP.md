@@ -38,7 +38,7 @@ Do not add phone/SIP/database/admin UI just to look more complete.
 Status:
 - All plan steps (0–9) are implemented and tested, including the Medplum replaceability checks. Plan step 9 showed that the same agent scenarios pass on the in-memory system and on Medplum, selected by configuration only.
 - Manual microphone calls on 2026-10-18 booked an appointment for an existing patient and registered a new patient, both end to end on Medplum. The fixes from those calls are in the plan.
-- The next phase is not chosen yet.
+- The next phase is Phase 4, by owner decision on 2026-10-25 (see Phase 4 below).
 
 Known quality items, not blocking:
 - STT misreads runs of identical digits.
@@ -91,7 +91,41 @@ Deliverables:
 - failure/rollback semantics,
 - audit trail.
 
-## Phase 4 — Telephony and cloud pilot
+## Phase 4 — Telephony and cloud pilot — IN PROGRESS (started 2026-10-25)
+
+**Order:** Phase 4 comes before Phases 2 and 3 by owner decision (2026-10-25), scoped to a proof of concept. From Phase 2 it takes only the routing of a dialed number to an agent profile. Before a second hospital, Phase 2 is needed. Before the first real hospital, Phase 3 is needed.
+
+**Gateway:** Asterisk 22 + `chan_websocket` (`docs/DECISIONS.md` A19). Background: `plans/2026-10-21-exacall-integration-report.md` and `plans/2026-10-22-telephony-review-brief.md`.
+
+**Step 1 — connect a call to Mujeeb in the local lab: IMPLEMENTED (2026-10-25)**
+- Plan: `plans/2026-10-25-phase-4-call-connection.md`.
+- Delivered:
+  - `AsteriskWsTransport`,
+  - the telephony gateway (`npm run telephony`),
+  - routing by dialed number,
+  - session creation shared with the browser,
+  - automated tests against a fake Asterisk,
+  - a reproducible lab (`deploy/asterisk/lab/`).
+- Verified 2026-10-25: a MicroSIP softphone called Asterisk in WSL, which connected to Mujeeb with live providers, and the call booked a sandbox appointment end to end.
+- This is a **local lab, not a commercial connection**. There is no carrier line, real number, or cloud server yet.
+
+**Next steps (not started):**
+- **Step 2, still in the lab:**
+  - the issues seen in the lab calls (see the step 1 plan),
+  - call control separate from audio, plus the ARI transfer spike,
+  - acceptance tests: a 30-minute call, 5 concurrent calls, repeated barge-in, XOFF, a WebSocket drop, and a Node restart mid-call, measured with p95,
+  - what the caller hears when Mujeeb is unavailable.
+- **Then a real line:**
+  - Oracle VM in a Saudi region with a reserved IP,
+  - the carrier trunk (ExaCall is a candidate),
+  - NAT settings tested on real SDP/RTP,
+  - production Asterisk templates in `deploy/asterisk/`,
+  - the first call from a mobile phone,
+  - a forwarded call,
+  - measuring the delay between the last mark and the caller's ear.
+- **Open owner decisions:**
+  - warm transfer in the first commercial version,
+  - data residency: storage only, or processing too (D4).
 
 Goal: replace laptop audio with real inbound call media.
 

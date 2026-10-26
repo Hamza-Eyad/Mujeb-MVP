@@ -5,12 +5,15 @@ This file distinguishes **current decisions** from **future candidates** and **o
 ## A. Current decisions
 
 ### A1. Current phase
-**Decision:** Build a local real-time Voice Agent MVP first.
+**Original decision (2026-10-07):** Build a local real-time Voice Agent MVP first:
+`Microphone -> STT -> LLM/Orchestrator -> TTS -> Speaker`.
 
-Current input/output:
-`Microphone -> STT -> LLM/Orchestrator -> TTS -> Speaker`
-
-No live telephony is required in this phase.
+**Status (2026-10-26):**
+- Phase 0 (local voice loop) and Phase 1 (appointment tools on a sandbox HIS) are implemented.
+- The current phase is **Phase 4, step 1** (owner decision, 2026-10-25). It connects calls to the same engine through Asterisk (A19) in a **local lab only**:
+  `MicroSIP softphone -> Asterisk (WSL) -> chan_websocket -> Mujeeb`.
+- There is no carrier line, no real phone number, and no cloud server yet.
+- From Phase 2, Phase 4 takes only the routing of a dialed number to an agent profile.
 
 ### A2. MVP architecture style
 **Decision:** Use a modular pipeline for the first implementation.
@@ -163,10 +166,68 @@ Constraints:
   - `phase: final_answer` on assistant history;
   - strict schemas.
 
+### A19. Telephony gateway: Asterisk 22 + `chan_websocket` — 2026-10-25
+**Decision:** Phone calls reach Mujeeb through **Asterisk 22 LTS**, using its WebSocket channel driver (`chan_websocket`).
+- Asterisk terminates SIP/RTP.
+- For each call, it opens **one WebSocket** to Mujeeb's telephony gateway on the same host.
+- Mujeeb sees the call through the existing `AudioTransport` port, through one adapter: `AsteriskWsTransport`.
+- `VoiceSession`, the agent tools, and the STT/LLM/TTS providers are unchanged.
+
+**Background:** `plans/2026-10-21-telephony-gateway-research.md`, `plans/2026-10-21-exacall-integration-report.md`, and `plans/2026-10-22-telephony-review-brief.md`. The brief includes the external review (§12): conditional approval to build, with production not yet approved.
+
+**Rejected alternatives:**
+
+| Alternative | Why it was rejected |
+|---|---|
+| ARI External Media (RTP/AudioSocket) | The app owns packet timing, which means more code |
+| FreeSWITCH + `mod_audio_stream` | External module, and some versions are commercial |
+| SIP/RTP in Node | Every SIP edge case becomes ours |
+| jambonz/LiveKit | Larger platforms than we need |
+| Hosted voice-AI platforms | They replace the engine or move audio out of Saudi Arabia |
+
+**Constraints:**
+- **Boundary:**
+  - Asterisk and `chan_websocket` knowledge stays in `src/adapters/telephony/asterisk/`.
+  - Only `src/app/telephony-server.ts` imports it.
+  - The architecture test enforces both rules.
+- **Gateway access:**
+  - The gateway binds to loopback only.
+  - Asterisk authenticates with HTTP Basic (`websocket_client.conf` username/password), compared in constant time.
+  - The shared secret is only in `.env` and the Asterisk host. It is never in the repository.
+- **Call lifecycle:**
+  - The dialplan dials with `n`, so Asterisk does not auto-answer.
+  - Mujeeb sends `ANSWER` only after the call's session exists.
+  - A call is refused before it is answered when the gateway is at capacity, the dialed key has no route, or `MEDIA_START` does not arrive in time.
+- **Call metadata:**
+  - The dialed number, caller, and call ID arrive as inherited channel variables in `MEDIA_START`, never in the WebSocket URL.
+  - Caller numbers are masked in logs.
+  - The caller number is **never** used as identity, because it can be spoofed.
+- **Routing:**
+  - One route key (DID or SIP address) maps to exactly one clinic profile (`config/telephony/routes.json`).
+  - An unknown key is refused, never guessed.
+  - The route source moves to tenant configuration in Phase 2, behind the same `CallRouter`.
+- **Playback:**
+  - Audio and marks share one ordered queue, which respects `MEDIA_XOFF`/`MEDIA_XON`.
+  - Audio goes out in whole frames.
+  - `playback_cleared` is reported only after Asterisk's `STATUS` confirms the flush.
+  - `MEDIA_MARK_PROCESSED` means "played by Asterisk", not "reached the caller's ear". Whether an extra delay is needed is measured on real calls before it is decided.
+- **Asterisk version:**
+  - Pinned to 22.11.0, built from source with a pinned SHA-256 (`deploy/asterisk/lab/build-asterisk.sh`).
+  - The JSON control format needs ≥ 22.8.
+- **Recording and outbound calls:**
+  - No call recording by default.
+  - No outbound route in any dialplan.
+- **Call transfer:** Transfer to staff (Phase 5) is expected through ARI. Call control stays separate from audio transport. A small lab spike, moving a live call from `Dial(WebSocket)` into `Stasis()`, is due before Phase 4 closes.
+
+**Lab vs commercial:**
+- The MicroSIP softphone, Asterisk in WSL2, and `deploy/asterisk/lab/` form a **local test bench on the developer laptop**. SIP is bound to 127.0.0.1, and the lab has no outbound route.
+- It is **not a commercial connection**. No carrier line (ExaCall is a candidate, see C), real phone number, or cloud server is connected.
+- Production Asterisk templates, NAT on the server, and the carrier trunk are later Phase 4 steps.
+- The code is permanent. Moving from the lab to a carrier line changes configuration only.
+
 ## B. Future planned directions — not current implementation scope
 
-- Live inbound telephone calls.
-- Telephony/SIP gateway.
+- Live inbound calls on a real carrier line, and the production Asterisk/server setup. The gateway design itself is current (A19). Only the local lab exists today.
 - Saudi/local carrier production route.
 - Twilio or another provider for prototype/bridge work if useful.
 - Oracle Cloud Saudi deployment direction.
@@ -182,7 +243,7 @@ Constraints:
 ## C. Candidates / research options — do not assume they are selected
 
 - Native speech-to-speech / realtime audio models as an alternative to the modular pipeline.
-- Specific Saudi SIP/telecom carrier.
+- Specific Saudi SIP/telecom carrier. ExaCall is under evaluation (`plans/2026-10-21-exacall-integration-report.md`) and is not selected yet.
 - Exact long-term database/cache stack.
 - Exact knowledge retrieval/vector technology.
 - Exact production deployment topology.
