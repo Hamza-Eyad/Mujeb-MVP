@@ -113,6 +113,17 @@ export function phoneSearchForms(canonical: string): string[] {
   ];
 }
 
+/**
+ * For logs: keeps only the last 3 digits of a phone number ("•••••••567"), so a call can be told apart
+ * from another without the log holding the caller's number. Non-digit input (a SIP address) is fully hidden.
+ */
+export function maskPhone(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const digits = toAsciiDigits(value).replace(/\D/g, '');
+  if (digits.length < 4) return '•••';
+  return `${'•'.repeat(digits.length - 3)}${digits.slice(-3)}`;
+}
+
 /** Arabic-Indic and Persian digits → ASCII. */
 export function toAsciiDigits(text: string): string {
   return text.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));

@@ -56,6 +56,14 @@ const envSchema = z.object({
   MUJEEB_DEV_HOST: z.string().trim().default('127.0.0.1'),
   MUJEEB_DEV_PORT: z.coerce.number().int().min(1).max(65535).default(8787),
 
+  MUJEEB_TELEPHONY_HOST: z.string().trim().default('127.0.0.1'),
+  MUJEEB_TELEPHONY_PORT: z.coerce.number().int().min(1).max(65535).default(8790),
+  MUJEEB_TELEPHONY_ROUTES: z.string().trim().min(1).default('config/telephony/routes.json'),
+  MUJEEB_TELEPHONY_MAX_CALLS: z.coerce.number().int().min(1).max(100).default(5),
+  MUJEEB_TELEPHONY_USERNAME: z.string().trim().min(1).default('asterisk'),
+  MUJEEB_TELEPHONY_PASSWORD: optionalString,
+  MUJEEB_TELEPHONY_CALL_START_TIMEOUT_MS: positiveMs(3000),
+
   MUJEEB_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   MUJEEB_LOG_DIR: z.string().trim().min(1).default('logs'),
   MUJEEB_LOG_TRANSCRIPTS: z.stringbool().default(false),
@@ -109,6 +117,19 @@ export interface Settings {
   medplum: { baseUrl: string; clientId?: string; clientSecret?: string; nationalIdSystem: string; directoryTtlMs: number };
   agentProfilePath: string;
   dev: { host: string; port: number };
+  /**
+   * Telephony gateway endpoint (Asterisk connects here, one WebSocket per call). `password` is needed only
+   * when the gateway runs (the `telephony` command).
+   */
+  telephony: {
+    host: string;
+    port: number;
+    routesPath: string;
+    maxCalls: number;
+    username: string;
+    password?: string;
+    callStartTimeoutMs: number;
+  };
   log: { level: 'debug' | 'info' | 'warn' | 'error'; dir: string; transcripts: boolean };
 }
 
@@ -179,6 +200,15 @@ export function loadSettings(env: NodeJS.ProcessEnv, options?: { forceFakeProvid
     },
     agentProfilePath: e.MUJEEB_AGENT_PROFILE,
     dev: { host: e.MUJEEB_DEV_HOST, port: e.MUJEEB_DEV_PORT },
+    telephony: {
+      host: e.MUJEEB_TELEPHONY_HOST,
+      port: e.MUJEEB_TELEPHONY_PORT,
+      routesPath: e.MUJEEB_TELEPHONY_ROUTES,
+      maxCalls: e.MUJEEB_TELEPHONY_MAX_CALLS,
+      username: e.MUJEEB_TELEPHONY_USERNAME,
+      ...(e.MUJEEB_TELEPHONY_PASSWORD ? { password: e.MUJEEB_TELEPHONY_PASSWORD } : {}),
+      callStartTimeoutMs: e.MUJEEB_TELEPHONY_CALL_START_TIMEOUT_MS,
+    },
     log: { level: e.MUJEEB_LOG_LEVEL, dir: e.MUJEEB_LOG_DIR, transcripts: e.MUJEEB_LOG_TRANSCRIPTS },
   };
 
@@ -205,6 +235,9 @@ export function loadSettings(env: NodeJS.ProcessEnv, options?: { forceFakeProvid
   }
   if (!LOOPBACK_HOSTS.has(settings.dev.host)) {
     throw new ConfigError('MUJEEB_DEV_HOST must be a loopback address: the local dev server has no authentication.');
+  }
+  if (!LOOPBACK_HOSTS.has(settings.telephony.host)) {
+    throw new ConfigError('MUJEEB_TELEPHONY_HOST must be a loopback address: only Asterisk on the same host may reach the gateway.');
   }
   return settings;
 }
@@ -239,6 +272,13 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
         settings.scheduling.provider === 'medplum'
           ? { base_url: settings.medplum.baseUrl, client_configured: Boolean(settings.medplum.clientId && settings.medplum.clientSecret) }
           : undefined,
+    },
+    telephony: {
+      host: settings.telephony.host,
+      port: settings.telephony.port,
+      routes: settings.telephony.routesPath,
+      max_calls: settings.telephony.maxCalls,
+      credentials_configured: Boolean(settings.telephony.password),
     },
     log: settings.log,
   };

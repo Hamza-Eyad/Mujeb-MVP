@@ -88,6 +88,21 @@ describe('architecture boundaries', () => {
     expect(importers).toEqual(['app/container.ts', 'app/medplum-seed-command.ts']);
   });
 
+  it('keeps Asterisk inside its adapter, used only by the telephony server (plans/2026-10-25-phase-4-call-connection.md)', () => {
+    const asteriskDir = join(SRC, 'adapters', 'telephony', 'asterisk');
+    const importers = files(SRC)
+      .filter((f) => !f.startsWith(asteriskDir))
+      .filter((f) => [...readFileSync(f, 'utf8').matchAll(IMPORT)].some((m) => (m[1] ?? '').includes('adapters/telephony/asterisk/')))
+      .map((f) => relative(SRC, f).split(sep).join('/'))
+      .sort();
+    expect(importers).toEqual(['app/telephony-server.ts']);
+    const leaks = files(SRC)
+      .filter((f) => ['core', 'ports', 'agent', 'voice', 'contracts'].includes(layerOf(f)))
+      .filter((f) => /asterisk|chan_websocket/i.test(readFileSync(f, 'utf8')))
+      .map((f) => relative(process.cwd(), f));
+    expect(leaks).toEqual([]);
+  });
+
   it('has no hardcoded record IDs (UUIDs) in code or agent profiles', () => {
     const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     const profileFiles = (dir: string): string[] =>

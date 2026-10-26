@@ -4,7 +4,6 @@ import type { AddressInfo } from 'node:net';
 import { join, resolve } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { BrowserWsTransport } from '../adapters/transports/browser-ws-transport.js';
-import { AppointmentTools } from '../agent/tools/appointment-tools.js';
 import type { AgentProfile } from '../contracts/agent-profile.js';
 import { pcm16 } from '../core/audio.js';
 import { errorSummary } from '../core/errors.js';
@@ -15,7 +14,8 @@ import type { LanguageModel } from '../ports/language-model.js';
 import type { SchedulingSystem } from '../ports/scheduling.js';
 import type { SpeechToText } from '../ports/speech-to-text.js';
 import type { TextToSpeech } from '../ports/text-to-speech.js';
-import { VoiceSession, type VoiceSessionConfig } from '../voice/session.js';
+import type { VoiceSession, VoiceSessionConfig } from '../voice/session.js';
+import { type AgentRuntime, createVoiceSession } from './session-factory.js';
 
 /**
  * Local-only dev server: serves the browser test client and bridges each WebSocket to one
@@ -95,6 +95,14 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     });
   });
 
+  const runtime: AgentRuntime = {
+    profile: options.profile,
+    providers: options.providers,
+    sessionConfig: options.sessionConfig,
+    metrics: options.metrics,
+    ...(options.scheduling ? { scheduling: options.scheduling } : {}),
+  };
+
   async function startSession(ws: WebSocket): Promise<void> {
     const sessionId = newSessionId();
     const log = options.log.child({ session_id: sessionId });
@@ -103,48 +111,11 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
       outputFormat: pcm16(DEV_AUDIO_SAMPLE_RATE),
       log: log.child({ component: 'transport' }),
     });
-    const { profile, providers, scheduling } = options;
-    const tenant = { tenantId: profile.tenantId, agentId: profile.agentId };
-    const toolsProfile = scheduling ? profile.appointmentTools : undefined;
-    // One instance per session: refs, verification, pending actions and the write ledger belong to this call.
-    const tools =
-      scheduling && toolsProfile && profile.timezone !== undefined
-        ? new AppointmentTools({
-            scheduling: scheduling.system,
-            tenant,
-            sessionId,
-            timeZone: profile.timezone,
-            log,
-            verificationPolicy: toolsProfile.patientVerification,
-            ...(toolsProfile.allowedTools ? { allowedTools: toolsProfile.allowedTools } : {}),
-            pendingActionTtlMs: toolsProfile.pendingActionTtlSec * 1000,
-            maxReconfirmations: toolsProfile.maxReconfirmations,
-            readTimeoutMs: scheduling.readTimeoutMs,
-            writeTimeoutMs: scheduling.writeTimeoutMs,
-          })
-        : undefined;
-    const session = new VoiceSession({
+    const { providers } = options;
+    const session = createVoiceSession(runtime, {
       sessionId,
-      tenant,
-      agent: {
-        instructions: tools && toolsProfile ? `${profile.instructions}\n\n${toolsProfile.instructions}` : profile.instructions,
-        historyMaxTurns: profile.historyMaxTurns,
-        ...(profile.greeting !== undefined ? { greeting: profile.greeting } : {}),
-        ...(tools && toolsProfile && scheduling
-          ? {
-              maxToolRounds: toolsProfile.maxToolRounds,
-              toolMutationGraceMs: scheduling.confirmGraceMs,
-              toolDrainTimeoutMs: scheduling.writeTimeoutMs + 2 * scheduling.readTimeoutMs,
-              ...(toolsProfile.waitPhrase !== undefined ? { toolWaitPhrase: toolsProfile.waitPhrase } : {}),
-            }
-          : {}),
-      },
       transport,
-      ...providers,
-      ...(tools ? { tools } : {}),
-      config: options.sessionConfig,
       log: options.log,
-      metrics: options.metrics,
       observer: (event) => transport.send({ type: 'event', event }),
     });
     sessions.add(session);

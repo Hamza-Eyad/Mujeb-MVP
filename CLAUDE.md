@@ -28,15 +28,21 @@
 - Design future healthcare and multi-tenant boundaries now, but do not implement unused infrastructure just because it may be needed later.
 
 ## Current build scope
-The local Voice Agent MVP (Phase 0) is implemented and runs on a developer laptop:
+Implemented:
+- **Phase 0:** the local voice loop on a developer laptop:
+  `Microphone -> streaming STT -> Mujeeb orchestration/LLM -> streaming TTS -> speaker`.
+- **Phase 1:** appointment tools on top of that loop, through a provider-independent `SchedulingSystem` port, backed by an in-memory adapter and a **Medplum sandbox** with synthetic data only. Plan: `plans/2026-10-12-his-scheduling-integration.md`. Decisions: `docs/DECISIONS.md` A14–A18. Its rules still apply:
+  - Medplum is temporary: no Medplum or FHIR knowledge outside `src/adapters/medplum/`, and no Medplum SDK.
+  - Every write needs server-side confirmation (`propose_*` → `confirm_pending_action`). Ambiguous replies never execute.
+  - New bookings are validated by the HIS at execution time. In-flight writes are never abandoned on interruption; uncertain outcomes are reconciled.
+  - Patient verification (`dev-identifier-dob`) is development-only, not production authentication.
 
-Microphone -> streaming STT -> Mujeeb orchestration/LLM -> streaming TTS -> speaker
-
-Current phase (Phase 1): give the agent appointment tools on top of that loop. The tools run through a provider-independent `SchedulingSystem` port, backed by an in-memory adapter and a **Medplum sandbox** with synthetic data only. Plan: `plans/2026-10-12-his-scheduling-integration.md`. Decisions: `docs/DECISIONS.md` A14–A18.
-- Medplum is temporary: no Medplum or FHIR knowledge outside `src/adapters/medplum/`, and no Medplum SDK.
-- Every write needs server-side confirmation (`propose_*` → `confirm_pending_action`). Ambiguous replies never execute.
-- New bookings are validated by the HIS at execution time. In-flight writes are never abandoned on interruption; uncertain outcomes are reconciled.
-- Patient verification (`dev-identifier-dob`) is development-only, not production authentication.
+Current phase: **Phase 4**, telephony. Step 1 is done. Calls reach the same engine through Asterisk (`docs/DECISIONS.md` A19) in a **local lab only**:
+`MicroSIP softphone -> Asterisk (WSL) -> chan_websocket -> Mujeeb (npm run telephony)`.
+Plan: `plans/2026-10-25-phase-4-call-connection.md`. Lab runbook: `deploy/asterisk/lab/README.md`.
+- No Asterisk or `chan_websocket` knowledge outside `src/adapters/telephony/asterisk/`. Only `src/app/telephony-server.ts` imports it.
+- The lab is not a commercial connection. Do not add a carrier trunk, production Asterisk templates, Oracle deployment, ARI, or call transfer unless the current task asks for it.
+- The caller number is never identity. Phone numbers are masked in logs. No call recording by default, and no outbound dial route.
 
 Current MVP goals:
 - Arabic/Saudi speech recognition quality.
@@ -48,7 +54,7 @@ Current MVP goals:
 - A clean provider abstraction that can later receive telephone audio instead of microphone audio.
 
 Current MVP exclusions unless explicitly requested:
-- SIP/phone numbers/production telephony.
+- Production telephony: a real carrier line or phone number (the local Asterisk lab above is in scope).
 - Oracle Cloud deployment.
 - Database-backed multi-tenancy.
 - Integration with a real hospital's HIS/EHR (the Medplum sandbox above is the only HIS in scope).
@@ -67,6 +73,7 @@ Current MVP exclusions unless explicitly requested:
 - TypeScript (strict) on Node.js 24 LTS for all runtime code (see `docs/DECISIONS.md` A10). Python is not part of the runtime.
 - Phase 0 design: `plans/2026-10-07-phase-0-architecture-proposal.md` (v2).
 - Phase 1 plan: `plans/2026-10-12-his-scheduling-integration.md`.
+- Phase 4 plan: `plans/2026-10-25-phase-4-call-connection.md`. Lab: `deploy/asterisk/lab/`.
 - Verify with `npm run check` (typecheck + lint + tests, no paid API calls).
 
 ## Product safety boundary
