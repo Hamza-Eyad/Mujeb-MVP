@@ -119,10 +119,15 @@ Deliverables:
   - a second synthetic clinic (301) with isolation tests,
   - acceptance tests with fake providers,
   - one real-provider call from MicroSIP (2026-10-28, 59 s, with an automatic stop). Real concurrent calls are deferred by owner decision, to save credits.
-- Waiting on owner decisions:
-  - the transcript diagnosis of the confirmation and national-ID issues,
-  - the normal-end rule for calls,
-  - the STT connection at call start: no retry within 5 s. One call failed this way on 2026-10-28.
+- Decided 2026-10-28:
+  - the normal-end rule (A19): hang up the caller's channel through `CallControl`, not built yet,
+  - the event-loop criterion: an increase over the idle baseline of at most 10 ms.
+- Proposed, waiting for approval to implement:
+  - open the STT connection before `ANSWER`, with one retry. One call failed on 2026-10-28 because the first attempt had no retry,
+  - make the Asterisk config files that hold secrets readable by root only,
+  - CI for `npm run check`.
+- Open quality issue: detecting an interruption on the phone takes 1.6–5.8 s (p50 3.5 s, n=4). This is separate from stopping the audio, which takes under 3 ms. Not solved.
+- Still waiting: the transcript diagnosis of the confirmation and national-ID issues. Transcripts stay off.
 - Last, and not blocking the carrier line: call control separate from audio, plus the ARI transfer spike.
 
 **Next steps (not started):**
