@@ -121,7 +121,7 @@ export async function startTelephonyServer(options: TelephonyServerOptions): Pro
       tenant_id: runtime.profile.tenantId,
       agent_id: runtime.profile.agentId,
     });
-    const session = createVoiceSession(runtime, { sessionId, transport, log: callLog });
+    const session = createVoiceSession(runtime, { sessionId, channel: 'phone', callId: call.callId, transport, log: callLog });
     sessions.add(session);
     ws.once('close', (code) => {
       sessions.delete(session);

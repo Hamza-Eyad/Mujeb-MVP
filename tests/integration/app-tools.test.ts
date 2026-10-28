@@ -136,6 +136,27 @@ describe('latency report', () => {
     expect(report.falseInterruptions).toBe(1);
     expect(report.rows.find((r) => r.metric === 'e2e_ms')).toMatchObject({ count: 2, p50: 900, p95: 1100 });
     expect(formatLatencyReport(report)).toContain('interrupt_stop_ms');
+    expect(report.byChannel).toEqual({ unknown: expect.objectContaining({ turns: 3 }) as unknown });
+    expect(formatLatencyReport(report)).not.toContain('── channel:');
+  });
+
+  it('reports phone and browser turns separately, and older turns without a channel as unknown', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mujeeb-report-'));
+    const lines = [
+      { channel: 'browser', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 2000 } },
+      { channel: 'phone', call_id: '1700.1', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 3000 } },
+      { channel: 'phone', call_id: '1700.1', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 3400 } },
+      { outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 9000 } },
+    ];
+    writeFileSync(join(dir, 'turns-2026-10-28.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+    const report = await buildLatencyReport(dir);
+    expect(Object.keys(report.byChannel)).toEqual(['phone', 'browser', 'unknown']);
+    expect(report.byChannel['phone']?.rows.find((r) => r.metric === 'e2e_ms')).toMatchObject({ count: 2, p50: 3000, p95: 3400 });
+    expect(report.byChannel['browser']?.turns).toBe(1);
+    expect(report.turns).toBe(4);
+    const text = formatLatencyReport(report);
+    expect(text).toContain('channels: phone 2, browser 1, unknown 1');
+    expect(text.indexOf('── channel: phone')).toBeLessThan(text.indexOf('── channel: browser'));
   });
 });
 

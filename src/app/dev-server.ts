@@ -114,6 +114,7 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     const { providers } = options;
     const session = createVoiceSession(runtime, {
       sessionId,
+      channel: 'browser',
       transport,
       log: options.log,
       observer: (event) => transport.send({ type: 'event', event }),

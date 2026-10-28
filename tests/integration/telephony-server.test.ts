@@ -12,16 +12,17 @@ import { TEST_CONFIG, delay, frame, waitFor } from '../support/session-harness.j
 
 const CREDENTIALS = { username: 'asterisk', password: 'test-only-secret' };
 
-function runtime(): AgentRuntime {
+function runtime(metrics = new MemoryTurnSink()): AgentRuntime {
   return {
     profile: { tenantId: 'demo', agentId: 'demo-clinic', displayName: 'Demo', languageCode: 'ar', instructions: 'x', historyMaxTurns: 6, greeting: 'أهلاً وسهلاً' },
     providers: { stt: new FakeSpeechToText({ mode: 'energy' }), llm: new FakeLanguageModel(), tts: new FakeTextToSpeech({ msPerChar: 25, realtimeFactor: 0.2 }) },
     sessionConfig: TEST_CONFIG,
-    metrics: new MemoryTurnSink(),
+    metrics,
   };
 }
 
 let server: TelephonyServer | undefined;
+let metrics = new MemoryTurnSink();
 const callers: FakeAsterisk[] = [];
 afterEach(async () => {
   for (const c of callers.splice(0)) c.ws.terminate();
@@ -30,13 +31,14 @@ afterEach(async () => {
 });
 
 async function start(maxCalls = 2): Promise<TelephonyServer> {
+  metrics = new MemoryTurnSink();
   server = await startTelephonyServer({
     host: '127.0.0.1',
     port: 0,
     credentials: CREDENTIALS,
     maxCalls,
     callStartTimeoutMs: 300,
-    router: new CallRouter([['300', runtime()]]),
+    router: new CallRouter([['300', runtime(metrics)]]),
     log: silentLogger,
   });
   return server;
@@ -72,16 +74,19 @@ describe('telephony server (Asterisk chan_websocket → VoiceSession)', () => {
     await waitFor(() => s.activeCalls() === 0, 2000, 'call released');
   });
 
-  it('hears the caller and answers a turn', async () => {
+  it('hears the caller and answers a turn, recording it as a phone turn of this call', async () => {
     const s = await start();
     const caller = await dial(s);
-    caller.mediaStart({ MUJEEB_DID: '300' });
+    caller.mediaStart({ MUJEEB_DID: '300', MUJEEB_CALL_ID: '1700.7' });
     await waitFor(() => caller.commands().includes('ANSWER'), 2000, 'ANSWER');
     await waitFor(() => caller.commands().includes('MARK_MEDIA:start:1'), 2000, 'greeting');
     await delay(400); // let the greeting finish
     for (let i = 0; i < 40; i += 1) caller.sendAudio(frame(true)); // 800ms of "speech"
     for (let i = 0; i < 45; i += 1) caller.sendAudio(frame(false)); // silence → the fake STT commits
     await waitFor(() => caller.commands().includes('MARK_MEDIA:start:2'), 8000, 'reply to the caller');
+    await waitFor(() => metrics.summaries.some((t) => t.kind === 'user'), 8000, 'user turn summary');
+    expect(metrics.summaries.length).toBeGreaterThanOrEqual(2);
+    expect(metrics.summaries.every((t) => t.channel === 'phone' && t.call_id === '1700.7')).toBe(true);
   });
 
   it('refuses an unknown number before answering', async () => {
