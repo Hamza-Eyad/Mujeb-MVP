@@ -117,11 +117,12 @@ Deliverables:
   - a fix for replies left silent after a paused interruption (seen in a 2026-10-25 call),
   - the apology the caller hears when Mujeeb is unavailable or fails,
   - a second synthetic clinic (301) with isolation tests,
-  - acceptance tests with fake providers.
+  - acceptance tests with fake providers,
+  - one real-provider call from MicroSIP (2026-10-28, 59 s, with an automatic stop). Real concurrent calls are deferred by owner decision, to save credits.
 - Waiting on owner decisions:
   - the transcript diagnosis of the confirmation and national-ID issues,
-  - the real-provider acceptance round (cost cap),
-  - the normal-end rule for calls.
+  - the normal-end rule for calls,
+  - the STT connection at call start: no retry within 5 s. One call failed this way on 2026-10-28.
 - Last, and not blocking the carrier line: call control separate from audio, plus the ARI transfer spike.
 
 **Next steps (not started):**
