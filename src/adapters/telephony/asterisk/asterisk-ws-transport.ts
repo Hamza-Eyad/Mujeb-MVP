@@ -18,8 +18,10 @@ import { type AsteriskCommand, type MediaStart, channelVariables, parseAsteriskE
  *   padded with silence once the TTS has been quiet for `tailFlushMs`. A mark inside a frame waits for the end
  *   of that frame: "heard" is reported up to 20ms late, never early.
  * - Asterisk times the audio out in real time and processes a mark when playback reaches it.
- * - clear(): FLUSH_MEDIA then GET_STATUS. Commands run in order, so the STATUS reply confirms the flush; only
- *   then, and only with an empty queue, is `playback_cleared` reported.
+ * - clear(): FLUSH_MEDIA, CONTINUE_MEDIA, then GET_STATUS. Commands run in order, so the STATUS reply confirms
+ *   the flush; only then, and only with an empty queue, is `playback_cleared` reported. FLUSH_MEDIA does not end
+ *   a PAUSE_MEDIA: without CONTINUE_MEDIA, an interruption that began with a pause left every later reply
+ *   queued and silent (lab, 2026-10-28; the 2026-10-25 call ses_af2938d4).
  * - STATUS carries no correlation ID. Asterisk sends it only in reply to GET_STATUS, in command order (checked
  *   in chan_websocket.c, 22.11.0), so each reply belongs to the oldest GET_STATUS still unanswered. A queue
  *   probe's reply therefore never confirms a flush.
@@ -138,6 +140,7 @@ export class AsteriskWsTransport implements AudioTransport {
     this.clearedThrough = Math.max(this.clearedThrough, epoch);
     if (this.epoch !== null && this.epoch <= epoch) this.resetStream();
     this.command({ command: 'FLUSH_MEDIA' });
+    this.command({ command: 'CONTINUE_MEDIA' }); // a clear also ends any pause: the next epoch must play
     this.requestStatus({ kind: 'clear', epoch });
   }
 

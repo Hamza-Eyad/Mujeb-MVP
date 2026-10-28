@@ -31,7 +31,7 @@ export interface AudioTransport {
   setHandler(handler: (event: TransportEvent) => void): void;
   sendAudio(epoch: number, data: Uint8Array): void;
   sendMark(epoch: number, name: string): void;
-  /** Stop playback now and drop everything buffered for this epoch and older. */
+  /** Stop playback now and drop everything buffered for this epoch and older. Also ends a pause(): the next epoch plays. */
   clear(epoch: number): void;
   pause(): void;
   resume(): void;

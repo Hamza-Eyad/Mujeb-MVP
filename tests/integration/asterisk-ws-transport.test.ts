@@ -116,12 +116,12 @@ describe('AsteriskWsTransport (chan_websocket, JSON control)', () => {
     ]);
   });
 
-  it('clears with FLUSH_MEDIA + GET_STATUS, confirms only on STATUS, and drops late audio of the cleared epoch', async () => {
+  it('clears with FLUSH_MEDIA + CONTINUE_MEDIA + GET_STATUS, confirms only on STATUS, and drops late audio of the cleared epoch', async () => {
     const c = await call();
     c.transport.sendAudio(1, bytes(640 * 3));
     c.transport.clear(1);
     await waitFor(() => c.asterisk.commands().includes('GET_STATUS'), 1000, 'GET_STATUS');
-    expect(c.asterisk.commands().slice(-2)).toEqual(['FLUSH_MEDIA', 'GET_STATUS']);
+    expect(c.asterisk.commands().slice(-3)).toEqual(['FLUSH_MEDIA', 'CONTINUE_MEDIA', 'GET_STATUS']);
     await delay(30);
     expect(c.events.some((e) => e.type === 'playback_cleared')).toBe(false);
 
@@ -159,7 +159,7 @@ describe('AsteriskWsTransport (chan_websocket, JSON control)', () => {
       const c = await call({ statusProbeMs: 60 });
       c.transport.clear(1);
       await waitFor(() => getStatusCount(c) === 2, 1000, 'flush then probe GET_STATUS');
-      expect(c.asterisk.commands().slice(0, 2)).toEqual(['FLUSH_MEDIA', 'GET_STATUS']);
+      expect(c.asterisk.commands().slice(0, 3)).toEqual(['FLUSH_MEDIA', 'CONTINUE_MEDIA', 'GET_STATUS']);
 
       c.asterisk.send(status(0));
       await waitFor(() => cleared(c).length === 1, 1000, 'playback_cleared');
@@ -265,6 +265,20 @@ describe('AsteriskWsTransport (chan_websocket, JSON control)', () => {
     c.transport.resume();
     await waitFor(() => c.asterisk.commands().length === 2, 1000, 'commands');
     expect(c.asterisk.commands()).toEqual(['PAUSE_MEDIA', 'CONTINUE_MEDIA']);
+  });
+
+  it('ends a pause when it clears, so the next reply plays (FLUSH_MEDIA alone leaves Asterisk paused)', async () => {
+    const c = await call({ autoStatus: true });
+    c.transport.sendAudio(1, bytes(640 * 2));
+    c.transport.pause(); // an unsure barge-in candidate
+    c.transport.clear(1); // then confirmed: interrupt
+    c.transport.sendAudio(2, bytes(640)); // the next reply
+    await waitFor(() => c.asterisk.commands().includes('MARK_MEDIA:start:2'), 1000, 'next reply');
+    const commands = c.asterisk.commands();
+    const lastPause = commands.lastIndexOf('PAUSE_MEDIA');
+    const continueAfterPause = commands.indexOf('CONTINUE_MEDIA', lastPause);
+    expect(continueAfterPause).toBeGreaterThan(commands.indexOf('FLUSH_MEDIA'));
+    expect(continueAfterPause).toBeLessThan(commands.indexOf('MARK_MEDIA:start:2'));
   });
 
   it('hangs up on close, and reports closed when Asterisk ends the call', async () => {
