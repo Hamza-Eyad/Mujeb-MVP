@@ -9,7 +9,7 @@ import { createJsonLogger } from '../observability/logger.js';
 import { JsonlTurnSink, type TurnSummarySink } from '../observability/turn-metrics.js';
 import { loadAgentProfile } from './agent-profile.js';
 import { CallRouter, loadCallRoutes } from './call-router.js';
-import { applyProfileVoice, buildSessionConfig, createProviders, createScheduling, createTts } from './container.js';
+import { applyProfileDataset, applyProfileVoice, assertSchedulingServesOneTenant, buildSessionConfig, createProviders, createScheduling, createTts } from './container.js';
 import { startDevServer } from './dev-server.js';
 import { renderPrompt } from './render-prompt.js';
 import type { AgentRuntime } from './session-factory.js';
@@ -23,7 +23,7 @@ const STATIC_DIR = fileURLToPath(new URL('../../web/dev-client', import.meta.url
 /** One clinic's agent, ready to run sessions: its profile, its voice, its providers and its scheduling system. */
 async function buildAgentRuntime(envSettings: Settings, profilePath: string, metrics: TurnSummarySink, log: Logger): Promise<{ runtime: AgentRuntime; settings: Settings }> {
   const profile = await loadAgentProfile(profilePath);
-  const settings = applyProfileVoice(envSettings, profile);
+  const settings = applyProfileDataset(applyProfileVoice(envSettings, profile), profile);
   const scheduling = await createScheduling(settings, profile.tenantId, log);
   if (scheduling && !profile.appointmentTools) {
     throw new ConfigError('MUJEEB_SCHEDULING_PROVIDER enables appointment tools, but the agent profile has no appointmentTools section');
@@ -122,6 +122,7 @@ async function telephony(fake: boolean): Promise<void> {
     }
     entries.push([route.key, runtime]);
   }
+  assertSchedulingServesOneTenant(settings, [...byProfile.values()].map((r) => r.profile.tenantId));
   const server = await startTelephonyServer({
     host: t.host,
     port: t.port,

@@ -1,0 +1,19 @@
+{
+  "tenantId": "demo-b",
+  "agentId": "demo-clinic-b",
+  "displayName": "عيادة مُجيب التجريبية الثانية",
+  "languageCode": "ar",
+  "greeting": "هلا والله، معك مُجيب من العيادة التجريبية الثانية. كيف أقدر أخدمك؟",
+  "instructionsFile": "instructions.md",
+  "historyMaxTurns": 12,
+  "timezone": "Asia/Riyadh",
+  "schedulingDataset": "../../test-data/demo-clinic-b.dataset.json",
+  "appointmentTools": {
+    "instructionsFile": "tools.md",
+    "patientVerification": "dev-identifier-dob",
+    "maxToolRounds": 5,
+    "pendingActionTtlSec": 120,
+    "maxReconfirmations": 2,
+    "waitPhrase": "لحظه أشيّك لك."
+  }
+}

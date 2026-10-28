@@ -16,7 +16,8 @@ export async function loadAgentProfile(dir: string): Promise<AgentProfile> {
   if (!parsed.success) {
     throw new ConfigError(`Invalid agent profile: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
   }
-  const { instructionsFile, appointmentTools, ...profile } = parsed.data;
+  const { instructionsFile, appointmentTools, schedulingDataset, ...rest } = parsed.data;
+  const profile = { ...rest, ...(schedulingDataset !== undefined ? { schedulingDataset: resolve(root, schedulingDataset) } : {}) };
   const instructions = await readInside(root, instructionsFile, 'instructionsFile');
   if (!appointmentTools) return { ...profile, instructions };
   const { instructionsFile: toolsFile, ...tools } = appointmentTools;

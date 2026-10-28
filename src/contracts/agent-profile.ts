@@ -31,6 +31,11 @@ export const agentProfileSchema = z
     historyMaxTurns: z.number().int().min(1).max(50).default(12),
     /** The clinic's IANA time zone (e.g. Asia/Riyadh). Required with appointment tools. */
     timezone: z.string().refine(isValidTimeZone, { error: 'unknown IANA time zone' }).optional(),
+    /**
+     * Development only (in-memory scheduling): this clinic's synthetic dataset, relative to the profile
+     * directory; the loader resolves it to an absolute path. Absent: MUJEEB_SCHEDULING_DATASET.
+     */
+    schedulingDataset: z.string().trim().min(1).optional(),
     appointmentTools: appointmentToolsSchema.optional(),
   })
   .refine((p) => p.appointmentTools === undefined || p.timezone !== undefined, { error: 'timezone is required when appointmentTools is set', path: ['timezone'] });

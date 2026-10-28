@@ -37,6 +37,25 @@ export function applyProfileVoice(s: Settings, profile: Pick<AgentProfile, 'voic
   return profile.voiceId === undefined ? s : { ...s, tts: { ...s.tts, voiceId: profile.voiceId } };
 }
 
+/**
+ * Several clinics on one gateway need a scheduling system per tenant. The in-memory system is built per
+ * clinic from its own dataset. The Medplum sandbox is one project with one set of credentials (DECISIONS
+ * A15): every clinic would reach the same data, so it serves one tenant only.
+ */
+export function assertSchedulingServesOneTenant(s: Settings, tenantIds: readonly string[]): void {
+  const tenants = [...new Set(tenantIds)];
+  if (s.scheduling.provider === 'medplum' && tenants.length > 1) {
+    throw new ConfigError(
+      `The routes serve ${tenants.length} clinics (${tenants.join(', ')}), but the Medplum sandbox is one project for one tenant (DECISIONS A15). Use MUJEEB_SCHEDULING_PROVIDER=memory for several clinics.`,
+    );
+  }
+}
+
+/** The clinic profile's synthetic dataset wins over the environment default (MUJEEB_SCHEDULING_DATASET). In-memory scheduling only. */
+export function applyProfileDataset(s: Settings, profile: Pick<AgentProfile, 'schedulingDataset'>): Settings {
+  return profile.schedulingDataset === undefined ? s : { ...s, scheduling: { ...s.scheduling, datasetPath: profile.schedulingDataset } };
+}
+
 export function createProviders(settings: Settings): Providers {
   return { stt: createStt(settings), llm: createLlm(settings), tts: createTts(settings) };
 }

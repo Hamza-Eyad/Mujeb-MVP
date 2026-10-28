@@ -6,6 +6,7 @@
 # Extensions:
 #   100 -> hello-world + Echo()   (call path and audio check, no Mujeeb)
 #   300 -> Mujeeb's telephony gateway (npm run telephony), through chan_websocket
+#   301 -> the same, for the second synthetic clinic (routes.two-clinics.json)
 #
 # Prompt: sounds/unavailable.sln16 (rendered once by `npm run lab:render-unavailable`) is installed as
 # mujeeb/unavailable: the apology a caller hears when the call to Mujeeb fails.
@@ -149,6 +150,11 @@ exten => 100,1,Answer()
 
 ; Mujeeb: the same contract the production dialplan will use (only the number differs).
 exten => 300,1,Gosub(mujeeb-call,s,1(${EXTEN}))
+ same => n,Hangup()
+
+; A second synthetic clinic (two-clinic tests, config/telephony/routes.two-clinics.json). With the default
+; routes it has no route, so the caller hears the apology.
+exten => 301,1,Gosub(mujeeb-call,s,1(${EXTEN}))
  same => n,Hangup()
 
 ; Anything else: hang up. No outbound dialing exists in this lab.
