@@ -13,6 +13,7 @@ MicroSIP (Windows) --SIP/RTP 127.0.0.1:5070--> Asterisk 22.11.0 (WSL Ubuntu 24.0
 |---|---|
 | `build-asterisk.sh` | بناء Asterisk ‏22.11.0 من المصدر. الإصدار والـchecksum ثابتان، والبناء يفشل لو الملف مختلف |
 | `setup-lab.sh` | كتابة إعدادات `/etc/asterisk` كاملة، وتوليد كلمات السر خارج المستودع، وتثبيت رسالة الاعتذار |
+| `load-calls.sh` | يبدأ عدة مكالمات اصطناعية في نفس اللحظة، لاختبارات الحمل (القسم أدناه) |
 | `sounds/unavailable.txt` | نص رسالة الاعتذار المعتمد |
 | `sounds/unavailable.sln16` | الرسالة بصوت العيادة، PCM ‏16 kHz. تُولَّد مرة واحدة بـ`npm.cmd run lab:render-unavailable` (طلب ElevenLabs واحد)، وليس عند كل مكالمة |
 
@@ -81,6 +82,19 @@ npm.cmd run telephony:fake   # مزودون وهميون، بدون مفاتيح
 - **لا تُشغَّل:** إذا قفل المتصل، أو إذا أُقفلت قناة المتصل نفسها (الإنهاء الطبيعي مستقبلًا يكون بهذه الطريقة، عبر التحكم بالمكالمة).
 - **السبب:** بعد الرد، كل طرق انتهاء جهة مُجيب تظهر للـdialplan بنفس القيم (`DIALSTATUS=ANSWER` و`HANGUPCAUSE=16`)، فلا يمكن التمييز بينها. القياسات في `plans/2026-10-28-phase-4-step-2-lab.md` (البند 3).
 - في سجل Asterisk يظهر السطر `mujeeb: call not completed` ومعه `DIALSTATUS` و`HANGUPCAUSE`.
+
+## مكالمات اصطناعية (اختبارات الحمل)
+
+`load-calls.sh` يبدأ عدة مكالمات في نفس اللحظة بدون softphone. كل مكالمة تقول عبارة قصيرة، ثم صمتًا، وتكرر:
+
+```bash
+sudo bash /mnt/c/Users/<user>/Desktop/Mujeb-MVP/deploy/asterisk/lab/load-calls.sh 5 180 3            # خمس مكالمات على 300 لمدة 3 دقائق
+sudo bash /mnt/c/Users/<user>/Desktop/Mujeb-MVP/deploy/asterisk/lab/load-calls.sh 4 180 3 300 301    # عيادتان (routes.two-clinics.json)
+```
+
+- مع `npm.cmd run telephony:fake` لا توجد أي تكلفة. والمزودون الحقيقيون يحتاجون موافقة على التكلفة أولًا.
+- للقياس: `MUJEEB_TELEPHONY_HEALTH_LOG_MS=5000` (سطر `gateway.health`) و`MUJEEB_TELEPHONY_STATUS_PROBE_MS=1000` (سطر `transport.queue_status`).
+- العيادتان تحتاجان `MUJEEB_SCHEDULING_PROVIDER=memory` و`MUJEEB_TELEPHONY_ROUTES=config/telephony/routes.two-clinics.json`. البوابة ترفض العمل بعيادتين على Medplum.
 
 ## التسجيل للتشخيص (اختياري، مغلق افتراضيًا)
 

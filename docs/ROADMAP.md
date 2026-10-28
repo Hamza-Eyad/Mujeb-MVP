@@ -109,12 +109,22 @@ Deliverables:
 - Verified 2026-10-25: a MicroSIP softphone called Asterisk in WSL, which connected to Mujeeb with live providers, and the call booked a sandbox appointment end to end.
 - This is a **local lab, not a commercial connection**. There is no carrier line, real number, or cloud server yet.
 
+**Step 2, still in the lab — IN PROGRESS (started 2026-10-28)**
+- Plan and results: `plans/2026-10-28-phase-4-step-2-lab.md`.
+- Done:
+  - turn metrics per channel (phone/browser) with the call ID,
+  - flush confirmation matched to its own `GET_STATUS`,
+  - a fix for replies left silent after a paused interruption (seen in a 2026-10-25 call),
+  - the apology the caller hears when Mujeeb is unavailable or fails,
+  - a second synthetic clinic (301) with isolation tests,
+  - acceptance tests with fake providers.
+- Waiting on owner decisions:
+  - the transcript diagnosis of the confirmation and national-ID issues,
+  - the real-provider acceptance round (cost cap),
+  - the normal-end rule for calls.
+- Last, and not blocking the carrier line: call control separate from audio, plus the ARI transfer spike.
+
 **Next steps (not started):**
-- **Step 2, still in the lab:**
-  - the issues seen in the lab calls (see the step 1 plan),
-  - call control separate from audio, plus the ARI transfer spike,
-  - acceptance tests: a 30-minute call, 5 concurrent calls, repeated barge-in, XOFF, a WebSocket drop, and a Node restart mid-call, measured with p95,
-  - what the caller hears when Mujeeb is unavailable.
 - **Then a real line:**
   - Oracle VM in a Saudi region with a reserved IP,
   - the carrier trunk (ExaCall is a candidate),
