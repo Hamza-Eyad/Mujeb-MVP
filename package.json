@@ -21,7 +21,8 @@
     "telephony:fake": "npm run build && node --env-file-if-exists=.env dist/app/cli.js telephony --fake",
     "probe:elevenlabs": "npm run build && node --env-file-if-exists=.env dist/app/cli.js probe-elevenlabs",
     "report": "npm run build && node --env-file-if-exists=.env dist/app/cli.js report",
-    "seed:medplum": "npm run build && node --env-file-if-exists=.env dist/app/cli.js seed-medplum"
+    "seed:medplum": "npm run build && node --env-file-if-exists=.env dist/app/cli.js seed-medplum",
+    "lab:render-unavailable": "npm run build && node --env-file-if-exists=.env dist/app/cli.js render-prompt --text-file deploy/asterisk/lab/sounds/unavailable.txt --out deploy/asterisk/lab/sounds/unavailable.sln16"
   },
   "dependencies": {
     "openai": "7.30.1",

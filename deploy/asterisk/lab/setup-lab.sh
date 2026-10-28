@@ -7,6 +7,9 @@
 #   100 -> hello-world + Echo()   (call path and audio check, no Mujeeb)
 #   300 -> Mujeeb's telephony gateway (npm run telephony), through chan_websocket
 #
+# Prompt: sounds/unavailable.sln16 (rendered once by `npm run lab:render-unavailable`) is installed as
+# mujeeb/unavailable: the apology a caller hears when the call to Mujeeb fails.
+#
 # Secrets are generated on first run and kept outside the repository, readable by root only:
 #   /etc/asterisk/lab-softphone-password     MicroSIP account password
 #   /etc/asterisk/mujeeb-telephony-password  shared secret = MUJEEB_TELEPHONY_PASSWORD in Mujeeb's .env
@@ -19,7 +22,12 @@
 set -euo pipefail
 CONF="${ASTERISK_CONF_DIR:-/etc/asterisk}"
 RECORD="${MUJEEB_LAB_RECORD:-0}"
+PROMPT="$(cd "$(dirname "$0")" && pwd)/sounds/unavailable.sln16"
 mkdir -p "$CONF"
+if [ ! -s "$PROMPT" ]; then
+  echo "Missing $PROMPT: render it first (npm run lab:render-unavailable)." >&2
+  exit 1
+fi
 
 secret() { # file, bytes
   if [ ! -s "$1" ]; then
@@ -116,6 +124,17 @@ fi
 # The dialplan contract with Mujeeb (DIALPLAN_VARIABLES in src/adapters/telephony/asterisk/asterisk-ws-transport.ts):
 # inherited (__) variables arrive in MEDIA_START, never in the WebSocket URL; c(slin16) is the audio format
 # Mujeeb expects; n = do not answer until Mujeeb sends ANSWER (after its session exists).
+#
+# When the call to Mujeeb fails (measured on 22.11.0, plans/2026-10-28-phase-4-step-2-lab.md item 3):
+# - Dial(..., g) returns to the dialplan only while the caller is still on the line. A caller hang-up never
+#   returns here.
+# - Before an answer: CHANUNAVAIL (gateway down, HTTP 401/503, connection dropped) or NOANSWER (Mujeeb refused
+#   the call, or did not answer within the timeout).
+# - After an answer, every end looks the same (DIALSTATUS=ANSWER, HANGUPCAUSE=16): a HANGUP command, a clean
+#   close, a dropped connection, a crashed process. The cause cannot tell a failure from a normal end.
+# - So Mujeeb never ends a call normally through its WebSocket leg: any return here is a failure, and the
+#   caller hears the apology. A future normal end must hang up the caller's own channel (call control),
+#   which never returns here.
 {
   cat <<'EOF'
 [general]
@@ -129,22 +148,31 @@ exten => 100,1,Answer()
  same => n,Hangup()
 
 ; Mujeeb: the same contract the production dialplan will use (only the number differs).
-exten => 300,1,Set(__MUJEEB_DID=${EXTEN})
+exten => 300,1,Gosub(mujeeb-call,s,1(${EXTEN}))
+ same => n,Hangup()
+
+; Anything else: hang up. No outbound dialing exists in this lab.
+exten => _X.,1,Hangup()
+
+; One call to Mujeeb. ARG1: the dialed number (Mujeeb's route key).
+[mujeeb-call]
+exten => s,1,Set(__MUJEEB_DID=${ARG1})
  same => n,Set(__MUJEEB_CALLER=${CALLERID(num)})
  same => n,Set(__MUJEEB_CALL_ID=${UNIQUEID})
 EOF
   printf '%s\n' "$RECORDING_LINES"
   cat <<'EOF'
- same => n,Dial(WebSocket/mujeeb/c(slin16)f(json)n)
+ same => n,Dial(WebSocket/mujeeb/c(slin16)f(json)n,10,g)
+ same => n,Verbose(1,mujeeb: call not completed - dialstatus=${DIALSTATUS} hangupcause=${HANGUPCAUSE})
+ same => n,Answer()
+ same => n,Playback(mujeeb/unavailable)
  same => n,Hangup()
-
-; Anything else: hang up. No outbound dialing exists in this lab.
-exten => _X.,1,Hangup()
 EOF
 } > "$CONF/extensions.conf"
 
 if [ "$CONF" = "/etc/asterisk" ]; then
-  mkdir -p /var/log/asterisk /var/spool/asterisk/monitor
+  mkdir -p /var/log/asterisk /var/spool/asterisk/monitor /var/lib/asterisk/sounds/mujeeb
+  install -m 644 "$PROMPT" /var/lib/asterisk/sounds/mujeeb/unavailable.sln16
   : > /var/log/asterisk/full
 fi
 echo "CONFIG_OK ($CONF, recording: $([ "$RECORD" = "1" ] && echo on || echo off))"

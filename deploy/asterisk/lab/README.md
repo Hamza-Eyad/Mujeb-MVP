@@ -12,7 +12,9 @@ MicroSIP (Windows) --SIP/RTP 127.0.0.1:5070--> Asterisk 22.11.0 (WSL Ubuntu 24.0
 | الملف | الغرض |
 |---|---|
 | `build-asterisk.sh` | بناء Asterisk ‏22.11.0 من المصدر. الإصدار والـchecksum ثابتان، والبناء يفشل لو الملف مختلف |
-| `setup-lab.sh` | كتابة إعدادات `/etc/asterisk` كاملة، وتوليد كلمات السر خارج المستودع |
+| `setup-lab.sh` | كتابة إعدادات `/etc/asterisk` كاملة، وتوليد كلمات السر خارج المستودع، وتثبيت رسالة الاعتذار |
+| `sounds/unavailable.txt` | نص رسالة الاعتذار المعتمد |
+| `sounds/unavailable.sln16` | الرسالة بصوت العيادة، PCM ‏16 kHz. تُولَّد مرة واحدة بـ`npm.cmd run lab:render-unavailable` (طلب ElevenLabs واحد)، وليس عند كل مكالمة |
 
 ## التجهيز (مرة واحدة)
 
@@ -71,6 +73,15 @@ npm.cmd run telephony:fake   # مزودون وهميون، بدون مفاتيح
 - `core reload`: بعد إعادة `setup-lab.sh`.
 - `core stop now`: إيقاف Asterisk.
 
+## رسالة الاعتذار
+
+إذا فشلت المكالمة إلى مُجيب والمتصل ما زال على الخط، يسمع: «عذرًا، ما نقدر نخدمك الحين. فضلًا اتصل مرة ثانية بعد شوي.» ثم تُقفل المكالمة.
+
+- **تُشغَّل في كل الحالات التالية:** مُجيب متوقف، أو رفض المكالمة (رقم بدون route، أو تجاوز الحد، أو كلمة سر خطأ)، أو لم يرد خلال 10 ثوانٍ، أو انتهت جهته بعد الرد لأي سبب.
+- **لا تُشغَّل:** إذا قفل المتصل، أو إذا أُقفلت قناة المتصل نفسها (الإنهاء الطبيعي مستقبلًا يكون بهذه الطريقة، عبر التحكم بالمكالمة).
+- **السبب:** بعد الرد، كل طرق انتهاء جهة مُجيب تظهر للـdialplan بنفس القيم (`DIALSTATUS=ANSWER` و`HANGUPCAUSE=16`)، فلا يمكن التمييز بينها. القياسات في `plans/2026-10-28-phase-4-step-2-lab.md` (البند 3).
+- في سجل Asterisk يظهر السطر `mujeeb: call not completed` ومعه `DIALSTATUS` و`HANGUPCAUSE`.
+
 ## التسجيل للتشخيص (اختياري، مغلق افتراضيًا)
 
 ```bash
@@ -88,7 +99,8 @@ sudo asterisk -rx 'dialplan reload'
 |---|---|
 | Asterisk ما يقدر يفتح المنفذ 5060 | MicroSIP ماسكه، والمنافذ مشتركة في وضع mirrored. المختبر يستخدم 5070 |
 | مكالمة بدون صوت، أو صوت في اتجاه واحد | MicroSIP يعلن عنوان الشبكة المنزلية، وهو يرجع لـUbuntu نفسه. الحل `rtp_symmetric` و`force_rport` و`rewrite_contact`، وكلها موجودة في `pjsip.conf` |
-| المكالمة تُقفل فورًا على 300 | مُجيب مو شغّال، أو كلمة السر غلط (سجل مُجيب: `telephony.connection_refused`)، أو الرقم مو في `routes.json` (`call.refused` بسبب `unknown_route`) |
+| رسالة الاعتذار فورًا على 300 | مُجيب مو شغّال، أو كلمة السر غلط (سجل مُجيب: `telephony.connection_refused`)، أو الرقم مو في `routes.json` (`call.refused` بسبب `unknown_route`) |
+| `setup-lab.sh` يفشل بـ`Missing .../unavailable.sln16` | ولّد الرسالة أولًا: `npm.cmd run lab:render-unavailable` |
 | سجل مُجيب: `transport.format_mismatch` | الـdialplan لازم يطلب `c(slin16)` |
 
 ## الفرق عن الإنتاج
@@ -102,7 +114,7 @@ sudo asterisk -rx 'dialplan reload'
 
 الثابت بين المختبر والإنتاج هو **عقد الـdialplan مع مُجيب** فقط:
 - المتغيرات الموروثة `__MUJEEB_DID` و`__MUJEEB_CALLER` و`__MUJEEB_CALL_ID`، وتصل في `MEDIA_START` وليس في الرابط.
-- الأمر `Dial(WebSocket/<connection>/c(slin16)f(json)n)`: بدون رد تلقائي، ومُجيب يرسل `ANSWER` بعد تجهيز الجلسة.
+- الأمر `Dial(WebSocket/<connection>/c(slin16)f(json)n,<مهلة>,g)`: بدون رد تلقائي، ومُجيب يرسل `ANSWER` بعد تجهيز الجلسة. والرجوع من `Dial` والمتصل على الخط يعني فشلًا، فتُشغَّل رسالة الاعتذار.
 - اتصال `websocket_client` بـusername/password.
 
 الأسماء معرّفة في الكود في `DIALPLAN_VARIABLES` (`src/adapters/telephony/asterisk/asterisk-ws-transport.ts`).

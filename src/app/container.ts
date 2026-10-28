@@ -85,7 +85,7 @@ export async function createScheduling(s: Settings, tenantId: string, log?: Logg
   return new MemorySchedulingSystem({ tenantId, dataset });
 }
 
-function createTts(s: Settings): TextToSpeech {
+export function createTts(s: Settings): TextToSpeech {
   if (s.tts.provider === 'fake') return new FakeTextToSpeech();
   if (s.tts.voiceId === undefined) {
     throw new ConfigError('No TTS voice: set "voiceId" in the clinic profile (profile.json), or MUJEEB_TTS_VOICE_ID in .env as the default');
