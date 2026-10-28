@@ -46,6 +46,7 @@ describe('telephony settings', () => {
       username: 'asterisk',
       callStartTimeoutMs: 3000,
       statusProbeMs: 0,
+      healthLogMs: 0,
     });
     expect(loadSettings({ ...base, MUJEEB_TELEPHONY_STATUS_PROBE_MS: '5000' }).telephony.statusProbeMs).toBe(5000);
   });

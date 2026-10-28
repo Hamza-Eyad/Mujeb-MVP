@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { AsteriskWsTransport } from '../adapters/telephony/asterisk/asterisk-ws-transport.js';
@@ -38,6 +39,8 @@ export interface TelephonyServerOptions {
   callStartTimeoutMs: number;
   /** Log each call's Asterisk playback queue length this often. 0 or absent: off. */
   statusProbeMs?: number;
+  /** Log the gateway's health (calls, event-loop delay, memory) this often. 0 or absent: off. */
+  healthLogMs?: number;
   router: CallRouter<AgentRuntime>;
   log: Logger;
 }
@@ -143,15 +146,46 @@ export async function startTelephonyServer(options: TelephonyServerOptions): Pro
     }
   }
 
+  const stopHealthLog = options.healthLogMs ? startHealthLog(options.healthLogMs, options.log, () => ({ active_calls: admitted, sessions: sessions.size })) : () => undefined;
+
   return {
     url,
     activeCalls: () => admitted,
     close: async () => {
+      stopHealthLog();
       await Promise.allSettled([...sessions].map((s) => s.close('server_shutdown')));
       for (const client of wss.clients) client.terminate();
       wss.close();
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     },
+  };
+}
+
+/**
+ * One `gateway.health` line per interval: calls, event-loop delay over the interval (a blocked loop delays
+ * every call's audio), and memory. Returns the stop function.
+ */
+function startHealthLog(intervalMs: number, log: Logger, counts: () => Record<string, number>): () => void {
+  const loop = monitorEventLoopDelay({ resolution: 10 });
+  loop.enable();
+  const ms = (ns: number): number => Math.round(ns / 1e5) / 10;
+  const mb = (bytes: number): number => Math.round(bytes / 1e5) / 10;
+  const timer = setInterval(() => {
+    const memory = process.memoryUsage();
+    log.info('gateway.health', {
+      ...counts(),
+      event_loop_p50_ms: ms(loop.percentile(50)),
+      event_loop_p99_ms: ms(loop.percentile(99)),
+      event_loop_max_ms: ms(loop.max),
+      rss_mb: mb(memory.rss),
+      heap_used_mb: mb(memory.heapUsed),
+    });
+    loop.reset();
+  }, intervalMs);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+    loop.disable();
   };
 }
 

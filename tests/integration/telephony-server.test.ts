@@ -6,6 +6,7 @@ import { CallRouter } from '../../src/app/call-router.js';
 import type { AgentRuntime } from '../../src/app/session-factory.js';
 import { type TelephonyServer, startTelephonyServer } from '../../src/app/telephony-server.js';
 import { silentLogger } from '../../src/core/logger.js';
+import { createJsonLogger } from '../../src/observability/logger.js';
 import { MemoryTurnSink } from '../../src/observability/turn-metrics.js';
 import { type FakeAsterisk, connectFakeAsterisk } from '../support/fake-asterisk.js';
 import { TEST_CONFIG, delay, frame, waitFor } from '../support/session-harness.js';
@@ -102,6 +103,31 @@ describe('telephony server (Asterisk chan_websocket → VoiceSession)', () => {
     const caller = await dial(s);
     expect(await caller.closed).toBe(1000);
     expect(caller.commands()).toEqual(['HANGUP']);
+  });
+
+  it('logs its health periodically when asked: calls, event-loop delay and memory', async () => {
+    const lines: Record<string, unknown>[] = [];
+    server = await startTelephonyServer({
+      host: '127.0.0.1',
+      port: 0,
+      credentials: CREDENTIALS,
+      maxCalls: 2,
+      callStartTimeoutMs: 300,
+      healthLogMs: 40,
+      router: new CallRouter([['300', runtime()]]),
+      log: createJsonLogger({ level: 'info', write: (line) => lines.push(JSON.parse(line) as Record<string, unknown>) }),
+    });
+    const caller = await dial(server);
+    caller.mediaStart({ MUJEEB_DID: '300' });
+    await waitFor(() => lines.some((l) => l['event'] === 'gateway.health' && l['active_calls'] === 1), 2000, 'health line with the call');
+    const health = lines.find((l) => l['event'] === 'gateway.health' && l['active_calls'] === 1);
+    expect(health).toMatchObject({ sessions: 1, event_loop_p99_ms: expect.any(Number) as unknown, heap_used_mb: expect.any(Number) as unknown, rss_mb: expect.any(Number) as unknown });
+
+    await server.close();
+    server = undefined;
+    const count = lines.filter((l) => l['event'] === 'gateway.health').length;
+    await delay(120);
+    expect(lines.filter((l) => l['event'] === 'gateway.health').length).toBe(count); // stopped on close
   });
 
   it('refuses a call over capacity and frees the slot when a call ends', async () => {

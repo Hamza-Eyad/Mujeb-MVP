@@ -173,6 +173,19 @@ EOF
  same => n,Answer()
  same => n,Playback(mujeeb/unavailable)
  same => n,Hangup()
+
+; Synthetic caller for lab load tests (load-calls.sh); no softphone can reach this context. The extension
+; describes the call: talk-<seconds>-<pause> says a short phrase, stays silent <pause> seconds (1-10), and
+; repeats for about <seconds>, then hangs up. Fake STT turns the phrase's energy into a canned Arabic
+; utterance. The pause plays silence frames, as a phone does: Wait() would send no audio at all.
+[lab-caller]
+exten => _talk-X.,1,Set(TALK_SECONDS=${CUT(EXTEN,-,2)})
+ same => n,Set(TALK_PAUSE=${CUT(EXTEN,-,3)})
+ same => n,Set(TALK_END=$[${EPOCH} + ${TALK_SECONDS}])
+ same => n(loop),Playback(tt-weasels)
+ same => n,Playback(silence/${TALK_PAUSE})
+ same => n,GotoIf($[${EPOCH} < ${TALK_END}]?loop)
+ same => n,Hangup()
 EOF
 } > "$CONF/extensions.conf"
 

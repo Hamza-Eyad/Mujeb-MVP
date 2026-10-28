@@ -130,6 +130,7 @@ async function telephony(fake: boolean): Promise<void> {
     maxCalls: t.maxCalls,
     callStartTimeoutMs: t.callStartTimeoutMs,
     statusProbeMs: t.statusProbeMs,
+    healthLogMs: t.healthLogMs,
     router: new CallRouter(entries),
     log,
   });
