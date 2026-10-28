@@ -3,6 +3,7 @@ import { FakeLanguageModel } from '../../src/adapters/fakes/fake-llm.js';
 import { FakeTextToSpeech } from '../../src/adapters/fakes/fake-tts.js';
 import { ProviderError } from '../../src/core/errors.js';
 import type { VoiceSession } from '../../src/voice/session.js';
+import { FakeTransport } from '../support/fake-transport.js';
 import { createHarness, delay, frames, waitFor } from '../support/session-harness.js';
 
 const open: VoiceSession[] = [];
@@ -103,6 +104,25 @@ describe('VoiceSession — barge-in', () => {
     expect(summaries(h)[1]).toMatchObject({ outcome: 'completed' });
     expect(h.transport.audioOps(2)).toBeGreaterThan(0);
     expect(h.session.history().map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('ends an interrupted turn on the clear-ack timeout, without a stop time, and ignores the late confirmation', async () => {
+    const transport = new FakeTransport({ clearAckDelayMs: 400 }); // TEST_CONFIG.clearAckTimeoutMs is 200
+    const h = track(createHarness({ transport, llm: { tokenDelayMs: 50 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking' && h.transport.audioOps(1) >= 3, 3000, 'speaking');
+
+    h.sttStream.partial('لا لحظة ابي اسأل');
+    await waitFor(() => summaries(h).length === 1, 1000, 'interrupted summary on timeout');
+    expect(summaries(h)[0]).toMatchObject({ outcome: 'interrupted', reason: 'barge_in' });
+    expect(summaries(h)[0]?.durations_ms.interrupt_stop_ms).toBeUndefined(); // the stop was never confirmed
+
+    await delay(300); // the late confirmation arrives
+    expect(summaries(h)).toHaveLength(1);
+    h.sttStream.commit('لا لحظة ابي اسأل عن الاسعار');
+    await waitFor(() => summaries(h).length === 2, 10000, 'next turn');
+    expect(summaries(h)[1]).toMatchObject({ outcome: 'completed' });
   });
 
   it('never forwards audio from a cancelled turn, even if the provider keeps sending', async () => {

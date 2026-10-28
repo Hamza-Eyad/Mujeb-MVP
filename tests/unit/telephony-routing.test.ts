@@ -36,7 +36,7 @@ describe('call routing (dialed number → clinic)', () => {
 describe('telephony settings', () => {
   const base = { MUJEEB_LLM_PROVIDER: 'fake', MUJEEB_STT_PROVIDER: 'fake', MUJEEB_TTS_PROVIDER: 'fake' };
 
-  it('defaults to a loopback gateway with no credentials configured', () => {
+  it('defaults to a loopback gateway with no credentials configured and no queue probing', () => {
     const s = loadSettings(base);
     expect(s.telephony).toEqual({
       host: '127.0.0.1',
@@ -45,7 +45,9 @@ describe('telephony settings', () => {
       maxCalls: 5,
       username: 'asterisk',
       callStartTimeoutMs: 3000,
+      statusProbeMs: 0,
     });
+    expect(loadSettings({ ...base, MUJEEB_TELEPHONY_STATUS_PROBE_MS: '5000' }).telephony.statusProbeMs).toBe(5000);
   });
 
   it('refuses a non-loopback gateway address', () => {

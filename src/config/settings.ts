@@ -63,6 +63,7 @@ const envSchema = z.object({
   MUJEEB_TELEPHONY_USERNAME: z.string().trim().min(1).default('asterisk'),
   MUJEEB_TELEPHONY_PASSWORD: optionalString,
   MUJEEB_TELEPHONY_CALL_START_TIMEOUT_MS: positiveMs(3000),
+  MUJEEB_TELEPHONY_STATUS_PROBE_MS: z.coerce.number().int().min(0).max(60_000).default(0),
 
   MUJEEB_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   MUJEEB_LOG_DIR: z.string().trim().min(1).default('logs'),
@@ -129,6 +130,8 @@ export interface Settings {
     username: string;
     password?: string;
     callStartTimeoutMs: number;
+    /** Log each call's Asterisk playback queue length this often (load tests). 0: off. */
+    statusProbeMs: number;
   };
   log: { level: 'debug' | 'info' | 'warn' | 'error'; dir: string; transcripts: boolean };
 }
@@ -208,6 +211,7 @@ export function loadSettings(env: NodeJS.ProcessEnv, options?: { forceFakeProvid
       username: e.MUJEEB_TELEPHONY_USERNAME,
       ...(e.MUJEEB_TELEPHONY_PASSWORD ? { password: e.MUJEEB_TELEPHONY_PASSWORD } : {}),
       callStartTimeoutMs: e.MUJEEB_TELEPHONY_CALL_START_TIMEOUT_MS,
+      statusProbeMs: e.MUJEEB_TELEPHONY_STATUS_PROBE_MS,
     },
     log: { level: e.MUJEEB_LOG_LEVEL, dir: e.MUJEEB_LOG_DIR, transcripts: e.MUJEEB_LOG_TRANSCRIPTS },
   };
@@ -278,6 +282,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
       port: settings.telephony.port,
       routes: settings.telephony.routesPath,
       max_calls: settings.telephony.maxCalls,
+      status_probe_ms: settings.telephony.statusProbeMs,
       credentials_configured: Boolean(settings.telephony.password),
     },
     log: settings.log,

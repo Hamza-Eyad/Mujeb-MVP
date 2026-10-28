@@ -36,6 +36,8 @@ export interface TelephonyServerOptions {
   credentials: { username: string; password: string };
   maxCalls: number;
   callStartTimeoutMs: number;
+  /** Log each call's Asterisk playback queue length this often. 0 or absent: off. */
+  statusProbeMs?: number;
   router: CallRouter<AgentRuntime>;
   log: Logger;
 }
@@ -97,7 +99,11 @@ export async function startTelephonyServer(options: TelephonyServerOptions): Pro
   async function handleCall(ws: WebSocket): Promise<void> {
     const sessionId = newSessionId();
     const log = options.log.child({ session_id: sessionId, component: 'telephony' });
-    const transport = new AsteriskWsTransport(ws, { format: TELEPHONY_AUDIO_FORMAT, log: log.child({ component: 'transport' }) });
+    const transport = new AsteriskWsTransport(ws, {
+      format: TELEPHONY_AUDIO_FORMAT,
+      log: log.child({ component: 'transport' }),
+      ...(options.statusProbeMs ? { statusProbeMs: options.statusProbeMs } : {}),
+    });
     let call: CallContext;
     try {
       call = await withTimeout(transport.callStarted(), options.callStartTimeoutMs, 'MEDIA_START did not arrive');

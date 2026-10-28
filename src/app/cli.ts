@@ -126,6 +126,7 @@ async function telephony(fake: boolean): Promise<void> {
     credentials: { username: t.username, password: t.password },
     maxCalls: t.maxCalls,
     callStartTimeoutMs: t.callStartTimeoutMs,
+    statusProbeMs: t.statusProbeMs,
     router: new CallRouter(entries),
     log,
   });
