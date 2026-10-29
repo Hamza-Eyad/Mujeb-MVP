@@ -20,6 +20,10 @@ export interface SttStream {
 export interface SttOpenOptions {
   format: AudioFormat;
   onEvent: (event: SttEvent) => void;
+  /**
+   * Cancels the opening: when it aborts before the stream is open, open() rejects and releases its
+   * connection (the socket is closed, not left to finish). It does not affect a stream already open.
+   */
   signal: AbortSignal;
   log: Logger;
 }

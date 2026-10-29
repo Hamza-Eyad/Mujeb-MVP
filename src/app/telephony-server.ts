@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { AsteriskWsTransport } from '../adapters/telephony/asterisk/asterisk-ws-transport.js';
 import type { CallContext } from '../contracts/call-context.js';
+import { withDeadline } from '../core/async.js';
 import { pcm16 } from '../core/audio.js';
 import { errorSummary } from '../core/errors.js';
 import { newSessionId } from '../core/ids.js';
@@ -21,8 +22,9 @@ import { type AgentRuntime, createVoiceSession } from './session-factory.js';
  * only thing exposed to the phone network.
  *
  * A call is turned away before it is answered when the credentials are wrong, the gateway is at capacity,
- * MEDIA_START does not arrive in time, or the dialed number has no route. It is answered only once its
- * session exists.
+ * MEDIA_START does not arrive in time, the dialed number has no route, or the session's STT cannot connect
+ * within `answerTimeoutMs`. It is answered only once STT is connected, so a caller never hears silence
+ * after the answer while a provider connects; a call turned away hears the dialplan's apology instead.
  */
 
 export const TELEPHONY_MEDIA_PATH = '/media';
@@ -37,6 +39,8 @@ export interface TelephonyServerOptions {
   credentials: { username: string; password: string };
   maxCalls: number;
   callStartTimeoutMs: number;
+  /** MEDIA_START to ANSWER, STT retries included. Must stay below the dialplan's Dial timeout. */
+  answerTimeoutMs: number;
   /** Log each call's Asterisk playback queue length this often. 0 or absent: off. */
   statusProbeMs?: number;
   /** Log the gateway's health (calls, event-loop delay, memory) this often. 0 or absent: off. */
@@ -136,11 +140,29 @@ export async function startTelephonyServer(options: TelephonyServerOptions): Pro
       sessions.delete(session);
       callLog.info('call.end', { session_id: sessionId, ws_code: code, duration_ms: Math.round(performance.now() - startedAt) });
     });
+    const deadline = withDeadline(undefined, options.answerTimeoutMs, () => new Error(`Not ready to answer within ${options.answerTimeoutMs} ms`));
+    try {
+      await session.prepare(deadline.signal);
+    } catch (err) {
+      sessions.delete(session);
+      if (ws.readyState !== ws.OPEN) {
+        // The caller hung up while the providers connected: the attempt was aborted, nothing is answered.
+        callLog.info('call.abandoned', { session_id: sessionId, stage: 'before_answer' });
+        await session.close('abandoned_before_answer');
+        return;
+      }
+      callLog.error('call.start_failed', { ...errorSummary(err), answered: false });
+      await session.close('start_failed');
+      return;
+    } finally {
+      deadline.dispose();
+    }
+    if (ws.readyState !== ws.OPEN || session.currentState === 'closed') return; // never a late ANSWER
     transport.answer();
     try {
       await session.start();
     } catch (err) {
-      callLog.error('call.start_failed', errorSummary(err));
+      callLog.error('call.start_failed', { ...errorSummary(err), answered: true });
       sessions.delete(session);
       await session.close('start_failed');
     }

@@ -1,6 +1,6 @@
 import { type AgentToolEvent, type AgentToolbox, AgentTurn } from '../agent/agent-turn.js';
 import { Conversation } from '../agent/conversation.js';
-import { abortReason, raceAbort, sleep } from '../core/async.js';
+import { abortReason, raceAbort, sleep, withDeadline } from '../core/async.js';
 import { bytesForDuration, concatBytes, durationMs, pcm16Samples } from '../core/audio.js';
 import { CancelledError, ProviderError, errorSummary } from '../core/errors.js';
 import { newTurnId } from '../core/ids.js';
@@ -76,6 +76,8 @@ export interface VoiceSessionConfig {
   /** Extra time allowed beyond the audio duration for the far end to confirm playback finished. */
   playbackGraceMs: number;
   clearAckTimeoutMs: number;
+  /** Opening STT when the session starts: attempts, each cut off after `attemptTimeoutMs`, with a pause between. */
+  sttConnect: { attempts: number; attemptTimeoutMs: number; retryDelayMs: number };
   sttReconnect: { maxAttempts: number; baseDelayMs: number };
   chunker: ChunkerOptions;
   bargeIn: BargeInPolicy;
@@ -160,6 +162,7 @@ export class VoiceSession {
   private sttStream: SttStream | undefined;
   private sttGeneration = 0;
   private sttReconnectAttempts = 0;
+  private preparing: Promise<void> | undefined;
   private ttsSession: Promise<TtsSession> | undefined;
 
   private epochCounter = 0;
@@ -215,17 +218,22 @@ export class VoiceSession {
     return this.conversation.snapshot();
   }
 
+  /**
+   * Connects the providers before anyone hears the session (a phone call is answered only after this).
+   * STT must connect: up to `sttConnect.attempts` tries, each aborted after `attemptTimeoutMs` (the attempt's
+   * socket is closed, not just ignored), retried only on retryable errors. TTS warms up at the same time,
+   * best effort. `deadline` bounds the whole step, pauses included. Rejects when STT cannot connect or the
+   * session closes meanwhile. Called again, it returns the same promise.
+   */
+  prepare(deadline?: AbortSignal): Promise<void> {
+    this.preparing ??= this.connectProviders(deadline);
+    return this.preparing;
+  }
+
   async start(): Promise<void> {
-    this.deps.transport.setHandler((event) => this.onTransportEvent(event));
-    this.log.info('session.start', {
-      input_format: this.deps.transport.inputFormat,
-      output_format: this.deps.transport.outputFormat,
-      duplex_mode: this.cfg.duplexMode,
-      providers: { stt: this.deps.stt.name, llm: this.deps.llm.name, tts: this.deps.tts.name },
-    });
-    await this.openStt();
+    await this.prepare();
+    if (this.state === 'closed') return;
     this.setState('listening');
-    void this.prewarmTts();
     const greeting = this.deps.agent.greeting;
     if (greeting !== undefined && greeting.trim() !== '') {
       this.beginTurn('greeting', '', this.newTimeline(), greeting);
@@ -350,16 +358,62 @@ export class VoiceSession {
 
   // ─────────────────────────────── STT ────────────────────────────────
 
-  private async openStt(): Promise<void> {
+  private async connectProviders(deadline: AbortSignal | undefined): Promise<void> {
+    this.deps.transport.setHandler((event) => this.onTransportEvent(event));
+    this.log.info('session.start', {
+      input_format: this.deps.transport.inputFormat,
+      output_format: this.deps.transport.outputFormat,
+      duplex_mode: this.cfg.duplexMode,
+      providers: { stt: this.deps.stt.name, llm: this.deps.llm.name, tts: this.deps.tts.name },
+    });
+    void this.prewarmTts();
+    await this.connectStt(deadline);
+  }
+
+  /** The first STT connection, with bounded retries. Mid-call reconnects go through scheduleSttReconnect. */
+  private async connectStt(deadline: AbortSignal | undefined): Promise<void> {
+    const { attempts, attemptTimeoutMs, retryDelayMs } = this.cfg.sttConnect;
+    const bound = deadline ? AbortSignal.any([this.lifetime.signal, deadline]) : this.lifetime.signal;
+    // Session closed or deadline passed: stop with that reason, never retry.
+    const stopped = (): Error | undefined => (this.lifetime.signal.aborted ? abortReason(this.lifetime.signal) : deadline?.aborted ? abortReason(deadline) : undefined);
+    for (let attempt = 1; ; attempt += 1) {
+      const timeout = withDeadline(bound, attemptTimeoutMs, () => new ProviderError(this.deps.stt.name, 'timeout', `Not connected within ${attemptTimeoutMs} ms`));
+      try {
+        await this.openStt(timeout.signal);
+        return;
+      } catch (err) {
+        const error = stopped() ?? err;
+        if (stopped() || attempt >= attempts || !(error instanceof ProviderError && error.retryable)) throw error;
+        this.log.warn('stt.connect_retry', { attempt, ...errorSummary(error) });
+      } finally {
+        timeout.dispose();
+      }
+      try {
+        await sleep(retryDelayMs, bound);
+      } catch (err) {
+        throw stopped() ?? err;
+      }
+    }
+  }
+
+  private async openStt(signal: AbortSignal = this.lifetime.signal): Promise<void> {
     const generation = ++this.sttGeneration;
-    const stream = await this.deps.stt.open({
+    const opening = this.deps.stt.open({
       format: this.deps.transport.inputFormat,
-      signal: this.lifetime.signal,
+      signal,
       log: this.log.child({ component: 'stt', provider: this.deps.stt.name }),
       onEvent: (event) => {
         if (generation === this.sttGeneration && this.state !== 'closed') this.onSttEvent(event);
       },
     });
+    // Adapters reject when `signal` aborts. A stream that opens anyway after that is closed at once.
+    opening.then(
+      (late) => {
+        if (signal.aborted) void late.close();
+      },
+      () => undefined,
+    );
+    const stream = await raceAbort(opening, signal);
     if (this.state === 'closed') {
       await stream.close();
       return;

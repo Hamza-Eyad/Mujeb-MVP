@@ -9,7 +9,7 @@ import { createJsonLogger } from '../observability/logger.js';
 import { JsonlTurnSink, type TurnSummarySink } from '../observability/turn-metrics.js';
 import { loadAgentProfile } from './agent-profile.js';
 import { CallRouter, loadCallRoutes } from './call-router.js';
-import { applyProfileDataset, applyProfileVoice, assertSchedulingServesOneTenant, buildSessionConfig, createProviders, createScheduling, createTts } from './container.js';
+import { applyProfileDataset, applyProfileVoice, assertAnswerTimeoutCoversStt, assertSchedulingServesOneTenant, buildSessionConfig, createProviders, createScheduling, createTts } from './container.js';
 import { startDevServer } from './dev-server.js';
 import { renderPrompt } from './render-prompt.js';
 import type { AgentRuntime } from './session-factory.js';
@@ -123,12 +123,14 @@ async function telephony(fake: boolean): Promise<void> {
     entries.push([route.key, runtime]);
   }
   assertSchedulingServesOneTenant(settings, [...byProfile.values()].map((r) => r.profile.tenantId));
+  assertAnswerTimeoutCoversStt(settings);
   const server = await startTelephonyServer({
     host: t.host,
     port: t.port,
     credentials: { username: t.username, password: t.password },
     maxCalls: t.maxCalls,
     callStartTimeoutMs: t.callStartTimeoutMs,
+    answerTimeoutMs: t.answerTimeoutMs,
     statusProbeMs: t.statusProbeMs,
     healthLogMs: t.healthLogMs,
     router: new CallRouter(entries),

@@ -166,6 +166,7 @@ describe('two clinics: four concurrent calls on one gateway', () => {
       credentials: CREDENTIALS,
       maxCalls: 4,
       callStartTimeoutMs: 500,
+      answerTimeoutMs: 2000,
       router: new CallRouter([
         ['300', runtime(a, ttsA, metrics)],
         ['301', runtime(b, ttsB, metrics)],

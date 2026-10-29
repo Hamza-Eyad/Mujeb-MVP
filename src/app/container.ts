@@ -51,6 +51,20 @@ export function assertSchedulingServesOneTenant(s: Settings, tenantIds: readonly
   }
 }
 
+/**
+ * A call is answered only once STT is connected: both STT attempts and the pause between them must fit in
+ * MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS, which itself stays below the dialplan's Dial timeout.
+ */
+export function assertAnswerTimeoutCoversStt(s: Settings): void {
+  const { attempts, attemptTimeoutMs, retryDelayMs } = buildSessionConfig(s).sttConnect;
+  const budgetMs = attempts * attemptTimeoutMs + (attempts - 1) * retryDelayMs;
+  if (budgetMs > s.telephony.answerTimeoutMs) {
+    throw new ConfigError(
+      `MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS (${s.telephony.answerTimeoutMs}) must be at least ${budgetMs}: ${attempts} STT attempts of MUJEEB_STT_CONNECT_TIMEOUT_MS (${attemptTimeoutMs}) and the pause between them`,
+    );
+  }
+}
+
 /** The clinic profile's synthetic dataset wins over the environment default (MUJEEB_SCHEDULING_DATASET). In-memory scheduling only. */
 export function applyProfileDataset(s: Settings, profile: Pick<AgentProfile, 'schedulingDataset'>): Settings {
   return profile.schedulingDataset === undefined ? s : { ...s, scheduling: { ...s.scheduling, datasetPath: profile.schedulingDataset } };
@@ -128,6 +142,7 @@ export function buildSessionConfig(s: Settings): VoiceSessionConfig {
     ttsFirstAudioTimeoutMs: s.tts.firstAudioTimeoutMs,
     playbackGraceMs: 4000,
     clearAckTimeoutMs: 1000,
+    sttConnect: { attempts: 2, attemptTimeoutMs: s.stt.connectTimeoutMs, retryDelayMs: 250 },
     sttReconnect: { maxAttempts: 4, baseDelayMs: 250 },
     chunker: DEFAULT_CHUNKER_OPTIONS,
     bargeIn: DEFAULT_BARGE_IN_POLICY,

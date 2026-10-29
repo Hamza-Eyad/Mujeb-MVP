@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CallRouter, loadCallRoutes } from '../../src/app/call-router.js';
+import { assertAnswerTimeoutCoversStt } from '../../src/app/container.js';
 import { loadSettings } from '../../src/config/settings.js';
 import { ConfigError } from '../../src/core/errors.js';
 import { maskPhone } from '../../src/core/phone.js';
@@ -45,10 +46,19 @@ describe('telephony settings', () => {
       maxCalls: 5,
       username: 'asterisk',
       callStartTimeoutMs: 3000,
+      answerTimeoutMs: 7000,
       statusProbeMs: 0,
       healthLogMs: 0,
     });
     expect(loadSettings({ ...base, MUJEEB_TELEPHONY_STATUS_PROBE_MS: '5000' }).telephony.statusProbeMs).toBe(5000);
+  });
+
+  it('answers only after STT connects: two 3s attempts and the pause fit in the 7s answer timeout', () => {
+    const s = loadSettings(base);
+    expect(s.stt.connectTimeoutMs).toBe(3000);
+    expect(() => assertAnswerTimeoutCoversStt(s)).not.toThrow(); // 2 × 3000 + 250 = 6250 ≤ 7000
+    expect(() => assertAnswerTimeoutCoversStt(loadSettings({ ...base, MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS: '6000' }))).toThrow(ConfigError);
+    expect(() => assertAnswerTimeoutCoversStt(loadSettings({ ...base, MUJEEB_STT_CONNECT_TIMEOUT_MS: '4000' }))).toThrow(/at least 8250/);
   });
 
   it('refuses a non-loopback gateway address', () => {

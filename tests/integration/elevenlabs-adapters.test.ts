@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { type AddressInfo, type Socket, createServer as createNetServer } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { ElevenLabsTts } from '../../src/adapters/elevenlabs/multi-context-tts.js';
@@ -158,6 +158,34 @@ describe('ElevenLabsRealtimeStt', () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ProviderError);
     expect(error).toMatchObject({ kind: 'auth', retryable: false });
+  });
+
+  it('a cancelled opening closes its socket: a stalled handshake is not left to finish', async () => {
+    // A server that accepts TCP and never answers the upgrade (the 2026-10-28 lab failure, without any network).
+    const sockets: Socket[] = [];
+    const closedSockets: Socket[] = [];
+    const stalled = createNetServer((socket) => {
+      sockets.push(socket);
+      socket.resume(); // read, so the client's FIN is seen
+      socket.on('close', () => closedSockets.push(socket));
+    });
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+    try {
+      const controller = new AbortController();
+      const opening = sttOptions(`http://127.0.0.1:${(stalled.address() as AddressInfo).port}`, { connectTimeoutMs: 10_000 }).open({
+        format: pcm16(16000),
+        onEvent: () => {},
+        signal: controller.signal,
+        log: silentLogger,
+      });
+      await waitFor(() => sockets.length === 1, 1000, 'connection');
+      controller.abort(new ProviderError('elevenlabs-stt', 'timeout', 'attempt timed out'));
+      await expect(opening).rejects.toMatchObject({ kind: 'timeout' });
+      await waitFor(() => closedSockets.length === 1, 1000, 'socket closed by the client');
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => stalled.close(() => resolve()));
+    }
   });
 
   it('accepts telephony μ-law input without transcoding', async () => {
