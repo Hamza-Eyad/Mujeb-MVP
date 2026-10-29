@@ -196,7 +196,7 @@ Constraints:
   - The shared secret is only in `.env` and the Asterisk host. It is never in the repository.
 - **Call lifecycle:**
   - The dialplan dials with `n`, so Asterisk does not auto-answer.
-  - Mujeeb sends `ANSWER` only after the call's session has connected STT (owner decision 2026-10-28). There are at most two attempts, all within `MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS`, which stays below the dialplan's `Dial` timeout. If STT does not connect in time, the call is turned away unanswered, so the caller hears ringing and then the apology, never silence after the answer.
+  - Mujeeb sends `ANSWER` only after the STT provider has confirmed the call's session (owner decision 2026-10-28; for ElevenLabs that is `session_started`, not an open WebSocket). There are at most two attempts, all within `MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS`, which stays below the dialplan's `Dial` timeout. If STT is not ready in time, or fails first (e.g. an auth error), the call is turned away unanswered. The caller hears ringing and then the apology, never silence after the answer.
   - A call is refused before it is answered when the gateway is at capacity, the dialed key has no route, or `MEDIA_START` does not arrive in time.
 - **Call end and failures (owner decision 2026-10-28):**
   - Measured on 22.11.0: once Mujeeb has answered, every end of Mujeeb's leg gives the same `DIALSTATUS=ANSWER` and `HANGUPCAUSE=16`. That covers `HANGUP`, a clean close, a dropped connection and a crashed process. The dialplan cannot tell a failure from a normal end by cause.

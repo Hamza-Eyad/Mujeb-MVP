@@ -123,7 +123,7 @@ Deliverables:
   - the normal-end rule (A19): hang up the caller's channel through `CallControl`, not built yet,
   - the event-loop criterion: an increase over the idle baseline of at most 10 ms.
 - Done 2026-10-29 (approved 2026-10-28):
-  - Mujeeb answers only after STT is connected. There are at most two attempts of 3 s each, a stalled attempt is aborted and its socket closed, and the 7 s limit stays below the 10 s `Dial` timeout. A call that cannot connect is turned away unanswered and hears the apology. Lab: 6.4 s of ringing, then the apology.
+  - Mujeeb answers only after the STT provider confirms the session (`session_started`, not just an open WebSocket). There are at most two attempts of 3 s each, a stalled attempt is aborted and its socket closed, and the 7 s limit stays below the 10 s `Dial` timeout. A call whose STT is not ready, or fails first (e.g. an auth error), is turned away unanswered and hears the apology. Lab: 6.4 s of ringing, then the apology.
   - The lab's Asterisk config files that hold secrets are root-only (`600`).
   - CI runs `npm run check` on Node 24 for every pull request.
 - Open quality issue: detecting an interruption on the phone takes 1.6–5.8 s (p50 3.5 s, n=4). This is separate from stopping the audio, which takes under 3 ms. Not solved.
