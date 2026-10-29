@@ -18,8 +18,13 @@ import { type AsteriskCommand, type MediaStart, channelVariables, parseAsteriskE
  *   padded with silence once the TTS has been quiet for `tailFlushMs`. A mark inside a frame waits for the end
  *   of that frame: "heard" is reported up to 20ms late, never early.
  * - Asterisk times the audio out in real time and processes a mark when playback reaches it.
- * - clear(): FLUSH_MEDIA then GET_STATUS. Commands run in order, so the STATUS reply confirms the flush; only
- *   then is `playback_cleared` reported.
+ * - clear(): FLUSH_MEDIA, CONTINUE_MEDIA, then GET_STATUS. Commands run in order, so the STATUS reply confirms
+ *   the flush; only then, and only with an empty queue, is `playback_cleared` reported. FLUSH_MEDIA does not end
+ *   a PAUSE_MEDIA: without CONTINUE_MEDIA, an interruption that began with a pause left every later reply
+ *   queued and silent (lab, 2026-10-28; the 2026-10-25 call ses_af2938d4).
+ * - STATUS carries no correlation ID. Asterisk sends it only in reply to GET_STATUS, in command order (checked
+ *   in chan_websocket.c, 22.11.0), so each reply belongs to the oldest GET_STATUS still unanswered. A queue
+ *   probe's reply therefore never confirms a flush.
  * - playback_started: a mark queued before an epoch's first audio, processed when playback reaches it.
  */
 
@@ -37,7 +42,12 @@ export interface AsteriskWsTransportOptions {
   tailFlushMs?: number;
   /** Frames per WebSocket message (Asterisk's limit is 65,500 bytes; small messages keep marks precise). */
   framesPerMessage?: number;
+  /** Ask Asterisk for its playback queue length this often and log it (load tests). 0 or absent: never. */
+  statusProbeMs?: number;
 }
+
+/** What an unanswered GET_STATUS was sent for. */
+type StatusRequest = { kind: 'clear'; epoch: number } | { kind: 'probe' };
 
 const START_MARK_PREFIX = 'start:';
 const MAX_INBOUND_FRAME_BYTES = 65_500;
@@ -50,6 +60,7 @@ export class AsteriskWsTransport implements AudioTransport {
   private readonly log: Logger;
   private readonly tailFlushMs: number;
   private readonly framesPerMessage: number;
+  private readonly statusProbeMs: number;
   private readonly started: Promise<CallContext>;
   private resolveStarted!: (call: CallContext) => void;
   private rejectStarted!: (err: Error) => void;
@@ -70,7 +81,9 @@ export class AsteriskWsTransport implements AudioTransport {
   private marks: Array<{ name: string; at: number }> = [];
   private xoff = false;
   private tailTimer: NodeJS.Timeout | undefined;
-  private readonly clearsAwaitingStatus: number[] = [];
+  private probeTimer: NodeJS.Timeout | undefined;
+  /** One entry per GET_STATUS sent and not yet answered, oldest first. */
+  private readonly statusRequests: StatusRequest[] = [];
 
   constructor(ws: WebSocket, options: AsteriskWsTransportOptions) {
     this.ws = ws;
@@ -79,6 +92,7 @@ export class AsteriskWsTransport implements AudioTransport {
     this.log = options.log;
     this.tailFlushMs = options.tailFlushMs ?? 60;
     this.framesPerMessage = options.framesPerMessage ?? 10;
+    this.statusProbeMs = options.statusProbeMs ?? 0;
     this.frameBytes = bytesForDuration(20, options.format);
     this.started = new Promise<CallContext>((resolve, reject) => {
       this.resolveStarted = resolve;
@@ -126,8 +140,8 @@ export class AsteriskWsTransport implements AudioTransport {
     this.clearedThrough = Math.max(this.clearedThrough, epoch);
     if (this.epoch !== null && this.epoch <= epoch) this.resetStream();
     this.command({ command: 'FLUSH_MEDIA' });
-    this.command({ command: 'GET_STATUS' });
-    this.clearsAwaitingStatus.push(epoch);
+    this.command({ command: 'CONTINUE_MEDIA' }); // a clear also ends any pause: the next epoch must play
+    this.requestStatus({ kind: 'clear', epoch });
   }
 
   pause(): void {
@@ -141,6 +155,7 @@ export class AsteriskWsTransport implements AudioTransport {
   /** Hangs up the call and closes the connection. */
   close(reason: string): void {
     this.clearTail();
+    this.stopProbe();
     if (this.closed) return;
     this.command({ command: 'HANGUP' });
     this.closed = true;
@@ -211,12 +226,56 @@ export class AsteriskWsTransport implements AudioTransport {
     this.sentBytes = 0;
   }
 
-  private command(cmd: AsteriskCommand): void {
-    if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
+  /** True when the command was sent. */
+  private command(cmd: AsteriskCommand): boolean {
+    if (this.closed || this.ws.readyState !== this.ws.OPEN) return false;
     this.ws.send(JSON.stringify(cmd));
+    return true;
+  }
+
+  private requestStatus(request: StatusRequest): void {
+    if (this.command({ command: 'GET_STATUS' })) this.statusRequests.push(request);
+  }
+
+  private startProbe(): void {
+    if (this.statusProbeMs <= 0 || this.probeTimer !== undefined) return;
+    this.probeTimer = setInterval(() => {
+      // One probe at a time: if Asterisk stops answering, requests must not pile up.
+      if (!this.statusRequests.some((r) => r.kind === 'probe')) this.requestStatus({ kind: 'probe' });
+    }, this.statusProbeMs);
+    this.probeTimer.unref();
+  }
+
+  private stopProbe(): void {
+    if (this.probeTimer !== undefined) clearInterval(this.probeTimer);
+    this.probeTimer = undefined;
+  }
+
+  private onStatus(queueLength: number, xonLevel: number | undefined): void {
+    if (this.xoff && xonLevel !== undefined && queueLength < xonLevel) {
+      this.xoff = false;
+      this.pump();
+    }
+    const request = this.statusRequests.shift();
+    if (request === undefined) {
+      this.log.warn('transport.status_unexpected', { queue_length: queueLength });
+      return;
+    }
+    if (request.kind === 'probe') {
+      this.log.info('transport.queue_status', { queue_length: queueLength, xoff: this.xoff });
+      return;
+    }
+    if (queueLength > 0) {
+      // FLUSH_MEDIA empties the queue, so audio is left only if some arrived between it and GET_STATUS. Not a
+      // confirmed stop: the session's clear-ack timeout ends the turn instead.
+      this.log.error('transport.flush_unconfirmed', { queue_length: queueLength, epoch: request.epoch });
+      return;
+    }
+    this.handler?.({ type: 'playback_cleared', epoch: request.epoch });
   }
 
   private onMessage(data: RawData, isBinary: boolean): void {
+    if (this.closed) return; // hung up by us: nothing more is delivered to the session
     if (isBinary) {
       const bytes = toUint8Array(data);
       if (bytes.byteLength === 0 || bytes.byteLength % 2 !== 0 || bytes.byteLength > MAX_INBOUND_FRAME_BYTES) {
@@ -254,17 +313,9 @@ export class AsteriskWsTransport implements AudioTransport {
         this.log.debug('transport.xon');
         this.pump();
         break;
-      case 'STATUS': {
-        if (this.xoff && event.xon_level !== undefined && event.queue_length < event.xon_level) {
-          this.xoff = false;
-          this.pump();
-        }
-        const epoch = this.clearsAwaitingStatus.shift();
-        if (epoch === undefined) break;
-        if (event.queue_length > 0) this.log.warn('transport.flush_left_media', { queue_length: event.queue_length, epoch });
-        this.handler?.({ type: 'playback_cleared', epoch });
+      case 'STATUS':
+        this.onStatus(event.queue_length, event.xon_level);
         break;
-      }
       case 'DTMF_END':
         // Not part of the AudioTransport port yet. The digit itself is not logged (it may be an ID).
         this.log.debug('transport.dtmf_ignored');
@@ -291,6 +342,7 @@ export class AsteriskWsTransport implements AudioTransport {
     }
     this.mediaStarted = true;
     this.frameBytes = start.optimal_frame_size;
+    this.startProbe();
     const caller = variables[DIALPLAN_VARIABLES.caller]?.trim();
     this.log.info('transport.media_start', { channel_id: start.channel_id, format: describeFormat(this.inputFormat), frame_bytes: this.frameBytes });
     this.resolveStarted({
@@ -302,6 +354,8 @@ export class AsteriskWsTransport implements AudioTransport {
 
   private onClose(reason: string): void {
     this.clearTail();
+    this.stopProbe();
+    this.statusRequests.length = 0; // no reply can arrive any more
     const wasClosed = this.closed;
     this.closed = true;
     this.rejectStarted(new Error(`connection closed before the call started (${reason})`));

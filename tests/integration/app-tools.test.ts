@@ -5,10 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
+import { FakeTextToSpeech } from '../../src/adapters/fakes/fake-tts.js';
 import { loadAgentProfile } from '../../src/app/agent-profile.js';
 import { runElevenLabsProbe } from '../../src/app/elevenlabs-probe.js';
 import { buildLatencyReport, formatLatencyReport } from '../../src/app/latency-report.js';
+import { renderPrompt } from '../../src/app/render-prompt.js';
+import { TELEPHONY_AUDIO_FORMAT } from '../../src/app/telephony-server.js';
 import { loadSettings } from '../../src/config/settings.js';
+import { durationMs } from '../../src/core/audio.js';
 import { ConfigError } from '../../src/core/errors.js';
 import { silentLogger } from '../../src/core/logger.js';
 
@@ -136,6 +140,44 @@ describe('latency report', () => {
     expect(report.falseInterruptions).toBe(1);
     expect(report.rows.find((r) => r.metric === 'e2e_ms')).toMatchObject({ count: 2, p50: 900, p95: 1100 });
     expect(formatLatencyReport(report)).toContain('interrupt_stop_ms');
+    expect(report.byChannel).toEqual({ unknown: expect.objectContaining({ turns: 3 }) as unknown });
+    expect(formatLatencyReport(report)).not.toContain('── channel:');
+  });
+
+  it('reports phone and browser turns separately, and older turns without a channel as unknown', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mujeeb-report-'));
+    const lines = [
+      { channel: 'browser', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 2000 } },
+      { channel: 'phone', call_id: '1700.1', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 3000 } },
+      { channel: 'phone', call_id: '1700.1', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 3400 } },
+      { outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 9000 } },
+    ];
+    writeFileSync(join(dir, 'turns-2026-10-28.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+    const report = await buildLatencyReport(dir);
+    expect(Object.keys(report.byChannel)).toEqual(['phone', 'browser', 'unknown']);
+    expect(report.byChannel['phone']?.rows.find((r) => r.metric === 'e2e_ms')).toMatchObject({ count: 2, p50: 3000, p95: 3400 });
+    expect(report.byChannel['browser']?.turns).toBe(1);
+    expect(report.turns).toBe(4);
+    const text = formatLatencyReport(report);
+    expect(text).toContain('channels: phone 2, browser 1, unknown 1');
+    expect(text.indexOf('── channel: phone')).toBeLessThan(text.indexOf('── channel: browser'));
+  });
+});
+
+describe('render-prompt (fixed telephony prompts, rendered once)', () => {
+  it('renders the whole text as telephony PCM through the TTS port', async () => {
+    const tts = new FakeTextToSpeech({ msPerChar: 20, realtimeFactor: 0 });
+    const audio = await renderPrompt(tts, '  عذرًا، ما نقدر نخدمك الحين.\n', { format: TELEPHONY_AUDIO_FORMAT, log: silentLogger, timeoutMs: 2000 });
+    expect(tts.utterances[0]?.segments).toEqual(['عذرًا، ما نقدر نخدمك الحين.']);
+    expect(tts.closed).toBe(1);
+    expect(audio.byteLength % 2).toBe(0);
+    expect(durationMs(audio.byteLength, TELEPHONY_AUDIO_FORMAT)).toBeGreaterThan(0);
+  });
+
+  it('refuses an empty prompt, and a TTS that never finishes', async () => {
+    const opts = { format: TELEPHONY_AUDIO_FORMAT, log: silentLogger, timeoutMs: 100 };
+    await expect(renderPrompt(new FakeTextToSpeech(), ' \n', opts)).rejects.toThrow(/empty/);
+    await expect(renderPrompt(new FakeTextToSpeech({ hang: true }), 'نص', opts)).rejects.toThrow(/did not finish|abort/i);
   });
 });
 

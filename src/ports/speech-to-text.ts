@@ -20,11 +20,20 @@ export interface SttStream {
 export interface SttOpenOptions {
   format: AudioFormat;
   onEvent: (event: SttEvent) => void;
+  /**
+   * Cancels the opening: when it aborts before the stream is open, open() rejects and releases its
+   * connection (the socket is closed, not left to finish). It does not affect a stream already open.
+   */
   signal: AbortSignal;
   log: Logger;
 }
 
 export interface SpeechToText {
   readonly name: string;
+  /**
+   * Resolves once the provider has confirmed the session and transcribes, not merely when a connection opens.
+   * A failure before that (e.g. an auth error) rejects instead, and the stream then emits no events. A phone
+   * call is answered only after this resolves.
+   */
   open(options: SttOpenOptions): Promise<SttStream>;
 }

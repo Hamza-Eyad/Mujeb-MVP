@@ -2,3 +2,5 @@
 # whatever core.autocrlf says, or bash fails on "\r".
 *.sh text eol=lf
 deploy/asterisk/** text eol=lf
+# Prompt audio (raw PCM) is binary: no line-ending conversion.
+deploy/asterisk/**/*.sln16 binary

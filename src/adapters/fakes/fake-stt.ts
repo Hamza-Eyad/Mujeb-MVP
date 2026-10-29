@@ -1,3 +1,4 @@
+import { abortReason } from '../../core/async.js';
 import { pcm16Samples } from '../../core/audio.js';
 import { ConfigError, type ProviderError } from '../../core/errors.js';
 import type { SpeechToText, SttEvent, SttOpenOptions, SttStream } from '../../ports/speech-to-text.js';
@@ -15,6 +16,8 @@ export interface FakeSttOptions {
   utterances?: readonly string[];
   /** Reject the next N open() calls with this error. */
   failOpen?: { times: number; error: ProviderError };
+  /** The next N open() calls never connect: they settle only when their signal aborts (a stalled handshake). */
+  hangOpen?: { times: number };
 }
 
 const DEFAULT_UTTERANCES = [
@@ -27,13 +30,17 @@ const DEFAULT_UTTERANCES = [
 export class FakeSpeechToText implements SpeechToText {
   readonly name = 'fake-stt';
   readonly streams: FakeSttStream[] = [];
+  /** Every open() call, and how it ended: what a real adapter's sockets would have done. */
+  readonly attempts: { outcome: 'pending' | 'open' | 'failed' | 'aborted' }[] = [];
   private readonly options: FakeSttOptions;
   private failuresLeft: number;
+  private hangsLeft: number;
   private utteranceIndex = 0;
 
   constructor(options: FakeSttOptions = { mode: 'scripted' }) {
     this.options = options;
     this.failuresLeft = options.failOpen?.times ?? 0;
+    this.hangsLeft = options.hangOpen?.times ?? 0;
   }
 
   get current(): FakeSttStream | undefined {
@@ -41,13 +48,35 @@ export class FakeSpeechToText implements SpeechToText {
   }
 
   open(options: SttOpenOptions): Promise<SttStream> {
+    const attempt: (typeof this.attempts)[number] = { outcome: 'pending' };
+    this.attempts.push(attempt);
+    if (options.signal.aborted) {
+      attempt.outcome = 'aborted';
+      return Promise.reject(abortReason(options.signal));
+    }
+    if (this.hangsLeft > 0) {
+      this.hangsLeft -= 1;
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            attempt.outcome = 'aborted';
+            reject(abortReason(options.signal));
+          },
+          { once: true },
+        );
+      });
+    }
     if (this.failuresLeft > 0 && this.options.failOpen) {
       this.failuresLeft -= 1;
+      attempt.outcome = 'failed';
       return Promise.reject(this.options.failOpen.error);
     }
     if (options.format.encoding !== 'pcm_s16le') {
+      attempt.outcome = 'failed';
       return Promise.reject(new ConfigError('fake STT supports PCM16 input only'));
     }
+    attempt.outcome = 'open';
     const stream = new FakeSttStream(options, this.options.mode, () => this.nextUtterance());
     this.streams.push(stream);
     queueMicrotask(() => stream.emit({ type: 'ready', effective: { provider: 'fake', mode: this.options.mode } }));

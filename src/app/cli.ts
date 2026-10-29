@@ -1,17 +1,19 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type Settings, describeSettings, loadSettings } from '../config/settings.js';
+import { describeFormat, durationMs } from '../core/audio.js';
 import { ConfigError } from '../core/errors.js';
 import type { Logger } from '../core/logger.js';
 import { createJsonLogger } from '../observability/logger.js';
 import { JsonlTurnSink, type TurnSummarySink } from '../observability/turn-metrics.js';
 import { loadAgentProfile } from './agent-profile.js';
 import { CallRouter, loadCallRoutes } from './call-router.js';
-import { applyProfileVoice, buildSessionConfig, createProviders, createScheduling } from './container.js';
+import { applyProfileDataset, applyProfileVoice, assertAnswerTimeoutCoversStt, assertSchedulingServesOneTenant, buildSessionConfig, createProviders, createScheduling, createTts } from './container.js';
 import { startDevServer } from './dev-server.js';
+import { renderPrompt } from './render-prompt.js';
 import type { AgentRuntime } from './session-factory.js';
-import { startTelephonyServer } from './telephony-server.js';
+import { TELEPHONY_AUDIO_FORMAT, startTelephonyServer } from './telephony-server.js';
 import { runElevenLabsProbe } from './elevenlabs-probe.js';
 import { buildLatencyReport, formatLatencyReport } from './latency-report.js';
 import { runSeedCommand } from './medplum-seed-command.js';
@@ -21,7 +23,7 @@ const STATIC_DIR = fileURLToPath(new URL('../../web/dev-client', import.meta.url
 /** One clinic's agent, ready to run sessions: its profile, its voice, its providers and its scheduling system. */
 async function buildAgentRuntime(envSettings: Settings, profilePath: string, metrics: TurnSummarySink, log: Logger): Promise<{ runtime: AgentRuntime; settings: Settings }> {
   const profile = await loadAgentProfile(profilePath);
-  const settings = applyProfileVoice(envSettings, profile);
+  const settings = applyProfileDataset(applyProfileVoice(envSettings, profile), profile);
   const scheduling = await createScheduling(settings, profile.tenantId, log);
   if (scheduling && !profile.appointmentTools) {
     throw new ConfigError('MUJEEB_SCHEDULING_PROVIDER enables appointment tools, but the agent profile has no appointmentTools section');
@@ -120,12 +122,17 @@ async function telephony(fake: boolean): Promise<void> {
     }
     entries.push([route.key, runtime]);
   }
+  assertSchedulingServesOneTenant(settings, [...byProfile.values()].map((r) => r.profile.tenantId));
+  assertAnswerTimeoutCoversStt(settings);
   const server = await startTelephonyServer({
     host: t.host,
     port: t.port,
     credentials: { username: t.username, password: t.password },
     maxCalls: t.maxCalls,
     callStartTimeoutMs: t.callStartTimeoutMs,
+    answerTimeoutMs: t.answerTimeoutMs,
+    statusProbeMs: t.statusProbeMs,
+    healthLogMs: t.healthLogMs,
     router: new CallRouter(entries),
     log,
   });
@@ -214,6 +221,33 @@ async function seedMedplum(args: string[]): Promise<void> {
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
+/**
+ * Renders a fixed prompt once, in the clinic's voice, as the telephony audio format (16 kHz PCM, Asterisk's
+ * `.sln16`). Lab: the apology Asterisk plays when a call to Mujeeb fails (deploy/asterisk/lab/sounds/).
+ */
+async function renderPromptCommand(args: string[]): Promise<void> {
+  const option = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const textFile = option('--text-file');
+  const out = option('--out');
+  if (textFile === undefined || out === undefined) {
+    throw new ConfigError('usage: render-prompt --text-file <prompt.txt> --out <prompt.sln16> [--profile <agent profile dir>]');
+  }
+  // Only the voice is needed: speech recognition and the language model stay fake, so their keys are not required.
+  const envSettings = loadSettings({ ...process.env, MUJEEB_LLM_PROVIDER: 'fake', MUJEEB_STT_PROVIDER: 'fake' });
+  const profile = await loadAgentProfile(option('--profile') ?? envSettings.agentProfilePath);
+  const settings = applyProfileVoice(envSettings, profile);
+  const log = createJsonLogger({ level: 'warn' });
+  const audio = await renderPrompt(createTts(settings), readFileSync(textFile, 'utf8'), { format: TELEPHONY_AUDIO_FORMAT, log, timeoutMs: 30_000 });
+  writeFileSync(out, audio);
+  const voice = profile.voiceId !== undefined ? `the ${profile.agentId} profile` : 'MUJEEB_TTS_VOICE_ID';
+  process.stdout.write(
+    `${out}: ${Math.round(durationMs(audio.byteLength, TELEPHONY_AUDIO_FORMAT))} ms of ${describeFormat(TELEPHONY_AUDIO_FORMAT)}, TTS ${settings.tts.provider}, voice from ${voice}\n`,
+  );
+}
+
 async function report(args: string[]): Promise<void> {
   const sinceIndex = args.indexOf('--since');
   const since = sinceIndex >= 0 ? args[sinceIndex + 1] : undefined;
@@ -240,8 +274,13 @@ async function main(): Promise<void> {
     case 'seed-medplum':
       await seedMedplum(args);
       return;
+    case 'render-prompt':
+      await renderPromptCommand(args);
+      return;
     default:
-      process.stderr.write('usage: cli.js <serve [--fake] | telephony [--fake] | probe-elevenlabs | report [--since YYYY-MM-DD] | seed-medplum [--apply] [--reset-appointments]>\n');
+      process.stderr.write(
+        'usage: cli.js <serve [--fake] | telephony [--fake] | probe-elevenlabs | report [--since YYYY-MM-DD] | seed-medplum [--apply] [--reset-appointments] | render-prompt --text-file <f> --out <f.sln16> [--profile <dir>]>\n',
+      );
       process.exitCode = 2;
   }
 }

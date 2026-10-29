@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "clinic": {
+    "key": "demo-clinic-b",
+    "name": "عيادة مُجيب التجريبية الثانية",
+    "locationName": "فرع الشمال",
+    "timezone": "Asia/Riyadh"
+  },
+  "services": [
+    {
+      "key": "dentistry",
+      "name": "طب الأسنان",
+      "aliases": ["أسنان", "دكتور أسنان", "طبيب أسنان", "dentistry"],
+      "durationMinutes": 30
+    },
+    {
+      "key": "ophthalmology",
+      "name": "العيون",
+      "aliases": ["عيون", "طبيب عيون", "دكتور عيون", "ophthalmology"],
+      "durationMinutes": 20
+    }
+  ],
+  "practitioners": [
+    {
+      "key": "dr-majed",
+      "name": "ماجد السبيعي",
+      "gender": "male",
+      "aliases": ["Majed Alsubaie"],
+      "serviceKeys": ["dentistry"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "21:00" }]
+    },
+    {
+      "key": "dr-hind",
+      "name": "هند المطيري",
+      "gender": "female",
+      "aliases": ["Hind Almutairi"],
+      "serviceKeys": ["dentistry"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" }]
+    },
+    {
+      "key": "dr-yousef",
+      "name": "يوسف الشمري",
+      "gender": "male",
+      "aliases": ["Yousef Alshammari"],
+      "serviceKeys": ["ophthalmology"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "17:00", "end": "21:00" }]
+    }
+  ],
+  "blocks": [],
+  "patients": [
+    {
+      "key": "patient-b-one",
+      "fullName": "سلمان عبدالعزيز الرشيدي",
+      "firstName": "سلمان",
+      "nationalId": "1000000600",
+      "phone": "+966500000201",
+      "birthDate": "1988-04-10",
+      "gender": "male"
+    },
+    {
+      "key": "patient-b-two",
+      "fullName": "لمى خالد العمري",
+      "firstName": "لمى",
+      "nationalId": "1000000700",
+      "phone": "+966500000202",
+      "birthDate": "1995-09-18",
+      "gender": "female"
+    }
+  ],
+  "appointments": [
+    { "key": "appt-b-one", "patientKey": "patient-b-one", "practitionerKey": "dr-majed", "serviceKey": "dentistry", "workday": 2, "time": "17:00" },
+    { "key": "appt-b-two", "patientKey": "patient-b-two", "practitionerKey": "dr-yousef", "serviceKey": "ophthalmology", "workday": 1, "time": "18:20" }
+  ]
+}

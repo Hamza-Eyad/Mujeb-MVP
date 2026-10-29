@@ -27,9 +27,12 @@ export class FakeTransport implements AudioTransport {
   private busy = false;
   private readonly started = new Set<number>();
   private readonly playbackSpeed: number;
+  private readonly clearAckDelayMs: number;
 
-  constructor(options: { playbackSpeed?: number; capabilities?: Partial<TransportCapabilities> } = {}) {
+  /** `clearAckDelayMs`: how long the far end takes to confirm a clear (beyond the session's timeout: a late reply). */
+  constructor(options: { playbackSpeed?: number; capabilities?: Partial<TransportCapabilities>; clearAckDelayMs?: number } = {}) {
     this.playbackSpeed = options.playbackSpeed ?? 0.05;
+    this.clearAckDelayMs = options.clearAckDelayMs ?? 2;
     this.capabilities = { pause: true, playbackStartEvents: true, ...options.capabilities };
   }
 
@@ -52,7 +55,7 @@ export class FakeTransport implements AudioTransport {
   clear(epoch: number): void {
     this.ops.push({ op: 'clear', epoch });
     this.queue = this.queue.filter((item) => item.epoch > epoch);
-    setTimeout(() => this.emit({ type: 'playback_cleared', epoch }), 2);
+    setTimeout(() => this.emit({ type: 'playback_cleared', epoch }), this.clearAckDelayMs);
   }
 
   pause(): void {

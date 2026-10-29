@@ -14,7 +14,10 @@ afterEach(async () => {
   server = undefined;
 });
 
+let metrics = new MemoryTurnSink();
+
 async function start(llm = new FakeLanguageModel()): Promise<DevServer> {
+  metrics = new MemoryTurnSink();
   server = await startDevServer({
     host: '127.0.0.1',
     port: 0,
@@ -23,7 +26,7 @@ async function start(llm = new FakeLanguageModel()): Promise<DevServer> {
     profile: { tenantId: 'demo', agentId: 'demo-clinic', displayName: 'Demo', languageCode: 'ar', instructions: 'x', historyMaxTurns: 6 },
     providers: { stt: new FakeSpeechToText({ mode: 'energy' }), llm, tts: new FakeTextToSpeech({ msPerChar: 25, realtimeFactor: 0.2 }) },
     sessionConfig: TEST_CONFIG,
-    metrics: new MemoryTurnSink(),
+    metrics,
     log: silentLogger,
     displayConfig: { llm: { provider: 'fake', model: 'm' }, openai_key_present: false },
   });
@@ -111,6 +114,8 @@ describe('dev server + browser transport over a real WebSocket', () => {
     expect((summary['durations_ms'] as Record<string, number>)['e2e_ms']).toBeGreaterThan(0);
     const liveMarks = events(rx).filter((e) => e['type'] === 'timeline').map((e) => e['mark']);
     expect(liveMarks).toEqual(expect.arrayContaining(['stt_committed', 'llm_first_token', 'tts_first_audio', 'tts_done', 'playback_start']));
+    expect(metrics.summaries.find((t) => t.kind === 'user')).toMatchObject({ channel: 'browser' });
+    expect(metrics.summaries.every((t) => t.call_id === undefined)).toBe(true);
     ws.close();
   });
 

@@ -15,6 +15,8 @@ import { elevenLabsFormat, handshakeError, websocketUrl } from './common.js';
  * - The settings the server says it applied (`session_started.config`) are surfaced as `ready`
  *   and compared to what we requested — that is how `turn_prediction` and zero retention are
  *   verified instead of assumed.
+ * - `open()` resolves on `session_started`, within `connectTimeoutMs` from the start of the upgrade.
+ *   An open socket alone is not a ready session.
  */
 
 export interface ElevenLabsSttOptions {
@@ -29,6 +31,11 @@ export interface ElevenLabsSttOptions {
 }
 
 const PROVIDER = 'elevenlabs-stt';
+
+interface SessionStart {
+  started(): void;
+  failed(error: ProviderError): void;
+}
 
 const serverMessageSchema = z.looseObject({
   message_type: z.string(),
@@ -75,15 +82,25 @@ export class ElevenLabsRealtimeStt implements SpeechToText {
       enable_logging: o.zeroRetention ? 'false' : undefined,
     };
     const url = websocketUrl(o.baseUrl, '/v1/speech-to-text/realtime', requested);
-    const ws = new WebSocket(url, { headers: { 'xi-api-key': o.apiKey }, handshakeTimeout: o.connectTimeoutMs ?? 5000 });
+    const timeoutMs = o.connectTimeoutMs ?? 5000;
+    const ws = new WebSocket(url, { headers: { 'xi-api-key': o.apiKey }, handshakeTimeout: timeoutMs });
     const stream = new ElevenLabsSttStream(ws, format.sampleRate, onEvent, log, requested);
 
+    // Resolves on `session_started`, not on the open socket: only then does the server transcribe. An error
+    // or a close before it rejects, and the stream then emits nothing.
     return new Promise<SttStream>((resolve, reject) => {
       let settled = false;
-      const fail = (error: Error): void => {
-        if (settled) return;
+      const timer = setTimeout(() => fail(new ProviderError(PROVIDER, 'timeout', `Session not started within ${timeoutMs} ms`)), timeoutMs);
+      const settle = (): boolean => {
+        if (settled) return false;
         settled = true;
+        clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
+        return true;
+      };
+      const fail = (error: Error): void => {
+        if (!settle()) return;
+        stream.abandon();
         ws.terminate();
         reject(error);
       };
@@ -97,11 +114,13 @@ export class ElevenLabsRealtimeStt implements SpeechToText {
       ws.once('error', (err) => fail(new ProviderError(PROVIDER, 'unavailable', `Connection failed: ${err.message}`, { cause: err })));
       ws.once('open', () => {
         if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        stream.attach();
         log.info('stt.connected', { model: o.model, audio_format: audioFormat, commit_strategy: o.commitStrategy, zero_retention_requested: o.zeroRetention });
-        resolve(stream);
+        stream.attach({
+          started: () => {
+            if (settle()) resolve(stream);
+          },
+          failed: fail,
+        });
       });
     });
   }
@@ -115,6 +134,8 @@ class ElevenLabsSttStream implements SttStream {
   private readonly requested: Record<string, string | undefined>;
   private closing = false;
   private fatal: ProviderError | undefined;
+  /** Set until `session_started`: reports the start (or a failure before it) back to open(). */
+  private starting: SessionStart | undefined;
 
   constructor(ws: WebSocket, sampleRate: number, onEvent: (event: SttEvent) => void, log: Logger, requested: Record<string, string | undefined>) {
     this.ws = ws;
@@ -124,14 +145,31 @@ class ElevenLabsSttStream implements SttStream {
     this.requested = requested;
   }
 
-  attach(): void {
+  attach(starting: SessionStart): void {
+    this.starting = starting;
     this.ws.on('message', (data) => this.onMessage(data));
     this.ws.on('error', (err) => this.log.warn('stt.ws_error', { message: err.message }));
     this.ws.on('close', (code, reason) => {
       if (this.closing) return;
       const error = this.fatal ?? new ProviderError(PROVIDER, 'unavailable', `Connection closed (${code}${reason.length > 0 ? `: ${reason.toString()}` : ''})`);
+      if (this.failStart(error)) return;
       this.onEvent({ type: 'closed', error });
     });
+  }
+
+  /** open() gave up before the session started (timeout, cancel, error): nothing is reported after this. */
+  abandon(): void {
+    this.closing = true;
+    this.starting = undefined;
+  }
+
+  /** Before `session_started`, a failure rejects open() instead of becoming a `closed` event. */
+  private failStart(error: ProviderError): boolean {
+    const starting = this.starting;
+    if (!starting) return false;
+    this.starting = undefined;
+    starting.failed(error);
+    return true;
   }
 
   sendAudio(data: Uint8Array): void {
@@ -171,10 +209,14 @@ class ElevenLabsSttStream implements SttStream {
       return;
     }
     switch (parsed.message_type) {
-      case 'session_started':
+      case 'session_started': {
         this.checkEffectiveConfig(parsed.config ?? {});
+        const starting = this.starting;
+        this.starting = undefined;
+        starting?.started();
         this.onEvent({ type: 'ready', effective: parsed.config ?? {} });
         return;
+      }
       case 'partial_transcript':
         this.onEvent({ type: 'partial', text: parsed.text ?? '' });
         return;
@@ -199,6 +241,7 @@ class ElevenLabsSttStream implements SttStream {
     const error = new ProviderError(PROVIDER, mapped.kind, `${parsed.message_type}: ${parsed.error ?? ''}`.trim());
     if (mapped.fatal) {
       this.fatal = error; // reported when the server closes the socket
+      if (this.failStart(error)) return; // before session_started: open() rejects now and closes the socket
       this.ws.close(1000, 'fatal_error');
       return;
     }

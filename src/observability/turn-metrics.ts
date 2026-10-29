@@ -5,10 +5,17 @@ import { DURATION_KEYS } from './turn-timeline.js';
 
 export type TurnOutcome = 'completed' | 'interrupted' | 'cancelled' | 'error';
 
+/** Where a session's audio comes from: a phone call through the telephony gateway, or the local browser client. */
+export type SessionChannel = 'phone' | 'browser';
+
 export interface TurnSummary {
   session_id: string;
   turn_id: string;
   tenant_id: string;
+  /** Set by the entry point that created the session. Absent in logs written before 2026-10-28. */
+  channel?: SessionChannel;
+  /** Phone calls: the call ID from the dialplan, to join turns with the gateway's call log. */
+  call_id?: string;
   kind: 'user' | 'greeting';
   outcome: TurnOutcome;
   reason?: string;
@@ -49,6 +56,17 @@ export class JsonlTurnSink implements TurnSummarySink {
   close(): Promise<void> {
     return new Promise((resolve) => this.stream.end(resolve));
   }
+}
+
+/**
+ * The shared sink, seen by one session: every summary also carries the fields known when the session was
+ * created. Closing this view leaves the shared sink open.
+ */
+export function withSessionFields(sink: TurnSummarySink, fields: Pick<TurnSummary, 'channel' | 'call_id'>): TurnSummarySink {
+  return {
+    write: (summary) => sink.write({ ...summary, ...fields }),
+    close: () => Promise.resolve(),
+  };
 }
 
 export class MemoryTurnSink implements TurnSummarySink {

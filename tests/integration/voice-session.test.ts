@@ -3,6 +3,7 @@ import { FakeLanguageModel } from '../../src/adapters/fakes/fake-llm.js';
 import { FakeTextToSpeech } from '../../src/adapters/fakes/fake-tts.js';
 import { ProviderError } from '../../src/core/errors.js';
 import type { VoiceSession } from '../../src/voice/session.js';
+import { FakeTransport } from '../support/fake-transport.js';
 import { createHarness, delay, frames, waitFor } from '../support/session-harness.js';
 
 const open: VoiceSession[] = [];
@@ -103,6 +104,25 @@ describe('VoiceSession — barge-in', () => {
     expect(summaries(h)[1]).toMatchObject({ outcome: 'completed' });
     expect(h.transport.audioOps(2)).toBeGreaterThan(0);
     expect(h.session.history().map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('ends an interrupted turn on the clear-ack timeout, without a stop time, and ignores the late confirmation', async () => {
+    const transport = new FakeTransport({ clearAckDelayMs: 400 }); // TEST_CONFIG.clearAckTimeoutMs is 200
+    const h = track(createHarness({ transport, llm: { tokenDelayMs: 50 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking' && h.transport.audioOps(1) >= 3, 3000, 'speaking');
+
+    h.sttStream.partial('لا لحظة ابي اسأل');
+    await waitFor(() => summaries(h).length === 1, 1000, 'interrupted summary on timeout');
+    expect(summaries(h)[0]).toMatchObject({ outcome: 'interrupted', reason: 'barge_in' });
+    expect(summaries(h)[0]?.durations_ms.interrupt_stop_ms).toBeUndefined(); // the stop was never confirmed
+
+    await delay(300); // the late confirmation arrives
+    expect(summaries(h)).toHaveLength(1);
+    h.sttStream.commit('لا لحظة ابي اسأل عن الاسعار');
+    await waitFor(() => summaries(h).length === 2, 10000, 'next turn');
+    expect(summaries(h)[1]).toMatchObject({ outcome: 'completed' });
   });
 
   it('never forwards audio from a cancelled turn, even if the provider keeps sending', async () => {
@@ -310,5 +330,74 @@ describe('VoiceSession — concurrency', () => {
       if (i !== 2) expect(h.session.history()[1]?.text).toContain(`طلب رقم ${i}`);
     });
     expect(llm.calls).toHaveLength(6);
+  });
+});
+
+describe('VoiceSession — connecting before the session is heard (prepare)', () => {
+  it('prepare() connects STT and warms TTS without speaking; start() then greets', async () => {
+    const h = track(createHarness({ greeting: 'أهلاً وسهلاً' }));
+    await h.session.prepare();
+    expect(h.stt.attempts.map((a) => a.outcome)).toEqual(['open']);
+    await waitFor(() => (h.tts as FakeTextToSpeech).opened === 1, 1000, 'TTS warmed');
+    expect(h.session.currentState).toBe('starting');
+    expect(h.transport.ops).toHaveLength(0); // nothing is spoken before start()
+    await h.session.start();
+    await waitFor(() => summaries(h).some((t) => t.kind === 'greeting'), 3000, 'greeting');
+    expect(h.stt.attempts).toHaveLength(1); // start() reuses the prepared connection
+    expect((h.tts as FakeTextToSpeech).opened).toBe(1);
+  });
+
+  it('aborts a stalled STT attempt and retries once (also the browser path: start() without a deadline)', async () => {
+    const h = track(createHarness({ stt: { hangOpen: { times: 1 } } }));
+    const started = Date.now();
+    await h.session.start();
+    expect(h.stt.attempts.map((a) => a.outcome)).toEqual(['aborted', 'open']); // the stalled attempt was cancelled, not ignored
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140); // the attempt timeout (150ms)
+    h.sttStream.commit('مرحبا');
+    await waitFor(() => summaries(h).length === 1);
+    expect(summaries(h)[0]?.outcome).toBe('completed');
+  });
+
+  it('gives up after two attempts, and never retries an authentication error', async () => {
+    const stalled = track(createHarness({ stt: { hangOpen: { times: 2 } } }));
+    await expect(stalled.session.prepare()).rejects.toMatchObject({ kind: 'timeout', provider: 'fake-stt' });
+    expect(stalled.stt.attempts.map((a) => a.outcome)).toEqual(['aborted', 'aborted']);
+
+    const denied = track(createHarness({ stt: { failOpen: { times: 1, error: new ProviderError('fake-stt', 'auth', 'bad key') } } }));
+    await expect(denied.session.prepare()).rejects.toMatchObject({ kind: 'auth' });
+    expect(denied.stt.attempts.map((a) => a.outcome)).toEqual(['failed']);
+    await expect(denied.session.start()).rejects.toMatchObject({ kind: 'auth' }); // start() reports the same failure
+  });
+
+  it('stops at the deadline, which bounds both attempts and the pause between them', async () => {
+    const h = track(createHarness({ stt: { hangOpen: { times: 2 } } }));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('deadline')), 200); // inside the second attempt (150 + 10 + 150)
+    const started = Date.now();
+    await expect(h.session.prepare(controller.signal)).rejects.toThrow('deadline');
+    clearTimeout(timer);
+    expect(Date.now() - started).toBeLessThan(290);
+    expect(h.stt.attempts.map((a) => a.outcome)).toEqual(['aborted', 'aborted']);
+  });
+
+  it('close() during prepare aborts the STT attempt at once and starts nothing', async () => {
+    const h = createHarness({ stt: { hangOpen: { times: 1 } }, config: { sttConnect: { attempts: 2, attemptTimeoutMs: 5000, retryDelayMs: 10 } } });
+    const preparing = h.session.prepare();
+    await delay(20);
+    await h.session.close('caller_hung_up');
+    await expect(preparing).rejects.toThrow();
+    expect(h.stt.attempts.map((a) => a.outcome)).toEqual(['aborted']);
+    await delay(50);
+    expect(h.stt.attempts).toHaveLength(1); // no retry after close
+    expect(h.stt.streams).toHaveLength(0);
+  });
+
+  it('a TTS failure while warming up is not fatal: the greeting opens TTS again', async () => {
+    const tts = new FakeTextToSpeech({ msPerChar: 25, failOpen: new ProviderError('fake-tts', 'unavailable', 'network'), failOpenTimes: 1 });
+    const h = track(createHarness({ tts, greeting: 'أهلاً وسهلاً' }));
+    await h.session.start();
+    await waitFor(() => summaries(h).some((t) => t.kind === 'greeting'), 3000, 'greeting');
+    expect(summaries(h).find((t) => t.kind === 'greeting')?.outcome).toBe('completed');
+    expect(tts.opened).toBe(1); // the failed warm-up, then one successful open
   });
 });

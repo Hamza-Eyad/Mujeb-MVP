@@ -196,8 +196,14 @@ Constraints:
   - The shared secret is only in `.env` and the Asterisk host. It is never in the repository.
 - **Call lifecycle:**
   - The dialplan dials with `n`, so Asterisk does not auto-answer.
-  - Mujeeb sends `ANSWER` only after the call's session exists.
+  - Mujeeb sends `ANSWER` only after the STT provider has confirmed the call's session (owner decision 2026-10-28; for ElevenLabs that is `session_started`, not an open WebSocket). There are at most two attempts, all within `MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS`, which stays below the dialplan's `Dial` timeout. If STT is not ready in time, or fails first (e.g. an auth error), the call is turned away unanswered. The caller hears ringing and then the apology, never silence after the answer.
   - A call is refused before it is answered when the gateway is at capacity, the dialed key has no route, or `MEDIA_START` does not arrive in time.
+- **Call end and failures (owner decision 2026-10-28):**
+  - Measured on 22.11.0: once Mujeeb has answered, every end of Mujeeb's leg gives the same `DIALSTATUS=ANSWER` and `HANGUPCAUSE=16`. That covers `HANGUP`, a clean close, a dropped connection and a crashed process. The dialplan cannot tell a failure from a normal end by cause.
+  - Dialplan contract: `Dial(WebSocket/...,<timeout>,g)`. Any return from `Dial` with the caller still on the line is a failure, and the caller hears the apology prompt.
+  - **Normal end (future):** Mujeeb ends a call by hanging up the caller's channel through a `CallControl` port. It never ends a call by `HANGUP` or by closing its own WebSocket leg. Those two remain for failures and refusals.
+  - `CallControl` is not built yet, and ARI is not part of this decision. Until it exists, a call ends normally only when the caller hangs up.
+  - Measurements: `plans/2026-10-28-phase-4-step-2-lab.md`, item 3.
 - **Call metadata:**
   - The dialed number, caller, and call ID arrive as inherited channel variables in `MEDIA_START`, never in the WebSocket URL.
   - Caller numbers are masked in logs.

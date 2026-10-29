@@ -18,6 +18,8 @@ export interface FakeTtsOptions {
   withAlignment?: boolean;
   ignoreAbort?: boolean;
   failOpen?: ProviderError;
+  /** With failOpen: only the first N open() calls fail (default: all). */
+  failOpenTimes?: number;
   /** Never produce audio (until aborted) — for timeout tests. */
   hang?: boolean;
 }
@@ -35,13 +37,18 @@ export class FakeTextToSpeech implements TextToSpeech {
   opened = 0;
   closed = 0;
   private readonly options: FakeTtsOptions;
+  private openFailuresLeft: number;
 
   constructor(options: FakeTtsOptions = {}) {
     this.options = options;
+    this.openFailuresLeft = options.failOpenTimes ?? Number.POSITIVE_INFINITY;
   }
 
   open({ format }: { format: AudioFormat }): Promise<TtsSession> {
-    if (this.options.failOpen) return Promise.reject(this.options.failOpen);
+    if (this.options.failOpen && this.openFailuresLeft > 0) {
+      this.openFailuresLeft -= 1;
+      return Promise.reject(this.options.failOpen);
+    }
     if (format.encoding !== 'pcm_s16le') return Promise.reject(new ConfigError('fake TTS produces PCM16 only'));
     this.opened += 1;
     return Promise.resolve({

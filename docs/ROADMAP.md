@@ -109,12 +109,31 @@ Deliverables:
 - Verified 2026-10-25: a MicroSIP softphone called Asterisk in WSL, which connected to Mujeeb with live providers, and the call booked a sandbox appointment end to end.
 - This is a **local lab, not a commercial connection**. There is no carrier line, real number, or cloud server yet.
 
+**Step 2, still in the lab — DONE (2026-10-29, PR #5), except items 5 and 7 below**
+- Plan and results: `plans/2026-10-28-phase-4-step-2-lab.md`.
+- Final lab check (2026-10-29): after the permission change, MicroSIP re-registered (refreshes every 300 s) and two calls to 100 played and echoed. No paid provider was used.
+- Done:
+  - turn metrics per channel (phone/browser) with the call ID,
+  - flush confirmation matched to its own `GET_STATUS`,
+  - a fix for replies left silent after a paused interruption (seen in a 2026-10-25 call),
+  - the apology the caller hears when Mujeeb is unavailable or fails,
+  - a second synthetic clinic (301) with isolation tests,
+  - acceptance tests with fake providers,
+  - one real-provider call from MicroSIP (2026-10-28, 59 s, with an automatic stop). Real concurrent calls are deferred by owner decision, to save credits.
+- Decided 2026-10-28:
+  - the normal-end rule (A19): hang up the caller's channel through `CallControl`, not built yet,
+  - the event-loop criterion: an increase over the idle baseline of at most 10 ms.
+- Done 2026-10-29 (approved 2026-10-28):
+  - Mujeeb answers only after the STT provider confirms the session (`session_started`, not just an open WebSocket). There are at most two attempts of 3 s each, a stalled attempt is aborted and its socket closed, and the 7 s limit stays below the 10 s `Dial` timeout. A call whose STT is not ready, or fails first (e.g. an auth error), is turned away unanswered and hears the apology. Lab: 6.4 s of ringing, then the apology.
+  - The lab's Asterisk config files that hold secrets are root-only (`600`).
+  - CI runs `npm run check` on Node 24 for every pull request.
+- Not done in step 2:
+  - **Open quality issue, next:** detecting an interruption on the phone takes 1.6–5.8 s (p50 3.5 s, n=4). This is separate from stopping the audio, which takes under 3 ms. A diagnosis plan with free local measurements comes first, with no behavior change before it.
+  - **Item 5, waiting on owner:** the transcript diagnosis of the confirmation and national-ID issues. Transcripts stay off.
+  - **Item 7, last and not blocking the carrier line:** call control separate from audio, and the ARI transfer spike.
+  - Real-provider concurrency, and timing of the answer-after-STT flow with real providers. Deferred to save credits.
+
 **Next steps (not started):**
-- **Step 2, still in the lab:**
-  - the issues seen in the lab calls (see the step 1 plan),
-  - call control separate from audio, plus the ARI transfer spike,
-  - acceptance tests: a 30-minute call, 5 concurrent calls, repeated barge-in, XOFF, a WebSocket drop, and a Node restart mid-call, measured with p95,
-  - what the caller hears when Mujeeb is unavailable.
 - **Then a real line:**
   - Oracle VM in a Saudi region with a reserved IP,
   - the carrier trunk (ExaCall is a candidate),

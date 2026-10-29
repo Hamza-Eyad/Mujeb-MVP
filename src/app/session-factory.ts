@@ -1,7 +1,7 @@
 import { AppointmentTools } from '../agent/tools/appointment-tools.js';
 import type { AgentProfile } from '../contracts/agent-profile.js';
 import type { Logger } from '../core/logger.js';
-import type { TurnSummarySink } from '../observability/turn-metrics.js';
+import { type SessionChannel, type TurnSummarySink, withSessionFields } from '../observability/turn-metrics.js';
 import type { AudioTransport } from '../ports/audio-transport.js';
 import type { LanguageModel } from '../ports/language-model.js';
 import type { SchedulingSystem } from '../ports/scheduling.js';
@@ -24,6 +24,10 @@ export interface AgentRuntime {
 
 export interface SessionStart {
   sessionId: string;
+  /** Recorded on every turn summary, so latency can be reported per channel. */
+  channel: SessionChannel;
+  /** Phone calls: the dialplan's call ID. */
+  callId?: string;
   transport: AudioTransport;
   log: Logger;
   observer?: (event: SessionEvent) => void;
@@ -73,7 +77,7 @@ export function createVoiceSession(runtime: AgentRuntime, start: SessionStart): 
     ...(tools ? { tools } : {}),
     config: runtime.sessionConfig,
     log,
-    metrics: runtime.metrics,
+    metrics: withSessionFields(runtime.metrics, { channel: start.channel, ...(start.callId !== undefined ? { call_id: start.callId } : {}) }),
     ...(start.observer ? { observer: start.observer } : {}),
   });
 }

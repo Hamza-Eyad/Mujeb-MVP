@@ -1,6 +1,6 @@
 import { FakeLanguageModel, type FakeLlmOptions } from '../../src/adapters/fakes/fake-llm.js';
 import type { AgentToolbox } from '../../src/agent/agent-turn.js';
-import { FakeSpeechToText } from '../../src/adapters/fakes/fake-stt.js';
+import { FakeSpeechToText, type FakeSttOptions } from '../../src/adapters/fakes/fake-stt.js';
 import { FakeTextToSpeech, type FakeTtsOptions } from '../../src/adapters/fakes/fake-tts.js';
 import { silentLogger } from '../../src/core/logger.js';
 import { MemoryTurnSink } from '../../src/observability/turn-metrics.js';
@@ -21,6 +21,7 @@ export const TEST_CONFIG: VoiceSessionConfig = {
   ttsFirstAudioTimeoutMs: 500,
   playbackGraceMs: 500,
   clearAckTimeoutMs: 200,
+  sttConnect: { attempts: 2, attemptTimeoutMs: 150, retryDelayMs: 10 },
   sttReconnect: { maxAttempts: 3, baseDelayMs: 10 },
   chunker: DEFAULT_CHUNKER_OPTIONS,
   bargeIn: DEFAULT_BARGE_IN_POLICY,
@@ -32,6 +33,8 @@ export interface HarnessOptions {
   config?: Partial<VoiceSessionConfig>;
   llm?: FakeLlmOptions | LanguageModel;
   tts?: FakeTtsOptions | TextToSpeech;
+  /** Scripted STT, with optional open failures or stalls. */
+  stt?: Omit<FakeSttOptions, 'mode'>;
   greeting?: string;
   transport?: FakeTransport;
   sessionId?: string;
@@ -42,7 +45,7 @@ export interface HarnessOptions {
 
 export function createHarness(options: HarnessOptions = {}) {
   const transport = options.transport ?? new FakeTransport();
-  const stt = new FakeSpeechToText({ mode: 'scripted' });
+  const stt = new FakeSpeechToText({ ...options.stt, mode: 'scripted' });
   const llm = isProvider(options.llm) ? options.llm : new FakeLanguageModel(options.llm);
   const tts = isProvider(options.tts) ? options.tts : new FakeTextToSpeech({ msPerChar: 25, ...options.tts });
   const sink = new MemoryTurnSink();

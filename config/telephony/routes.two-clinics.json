@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "key": "300",
+      "agentProfile": "config/agents/demo-clinic",
+      "note": "Local lab, two-clinic isolation tests (plans/2026-10-28-phase-4-step-2-lab.md item 4). In-memory scheduling only: MUJEEB_TELEPHONY_ROUTES=config/telephony/routes.two-clinics.json with MUJEEB_SCHEDULING_PROVIDER=memory."
+    },
+    {
+      "key": "301",
+      "agentProfile": "config/agents/demo-clinic-b",
+      "note": "Second synthetic clinic (tenant demo-b), its own dataset (config/test-data/demo-clinic-b.dataset.json)."
+    }
+  ]
+}

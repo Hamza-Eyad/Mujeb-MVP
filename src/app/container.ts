@@ -37,6 +37,39 @@ export function applyProfileVoice(s: Settings, profile: Pick<AgentProfile, 'voic
   return profile.voiceId === undefined ? s : { ...s, tts: { ...s.tts, voiceId: profile.voiceId } };
 }
 
+/**
+ * Several clinics on one gateway need a scheduling system per tenant. The in-memory system is built per
+ * clinic from its own dataset. The Medplum sandbox is one project with one set of credentials (DECISIONS
+ * A15): every clinic would reach the same data, so it serves one tenant only.
+ */
+export function assertSchedulingServesOneTenant(s: Settings, tenantIds: readonly string[]): void {
+  const tenants = [...new Set(tenantIds)];
+  if (s.scheduling.provider === 'medplum' && tenants.length > 1) {
+    throw new ConfigError(
+      `The routes serve ${tenants.length} clinics (${tenants.join(', ')}), but the Medplum sandbox is one project for one tenant (DECISIONS A15). Use MUJEEB_SCHEDULING_PROVIDER=memory for several clinics.`,
+    );
+  }
+}
+
+/**
+ * A call is answered only once STT is connected: both STT attempts and the pause between them must fit in
+ * MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS, which itself stays below the dialplan's Dial timeout.
+ */
+export function assertAnswerTimeoutCoversStt(s: Settings): void {
+  const { attempts, attemptTimeoutMs, retryDelayMs } = buildSessionConfig(s).sttConnect;
+  const budgetMs = attempts * attemptTimeoutMs + (attempts - 1) * retryDelayMs;
+  if (budgetMs > s.telephony.answerTimeoutMs) {
+    throw new ConfigError(
+      `MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS (${s.telephony.answerTimeoutMs}) must be at least ${budgetMs}: ${attempts} STT attempts of MUJEEB_STT_CONNECT_TIMEOUT_MS (${attemptTimeoutMs}) and the pause between them`,
+    );
+  }
+}
+
+/** The clinic profile's synthetic dataset wins over the environment default (MUJEEB_SCHEDULING_DATASET). In-memory scheduling only. */
+export function applyProfileDataset(s: Settings, profile: Pick<AgentProfile, 'schedulingDataset'>): Settings {
+  return profile.schedulingDataset === undefined ? s : { ...s, scheduling: { ...s.scheduling, datasetPath: profile.schedulingDataset } };
+}
+
 export function createProviders(settings: Settings): Providers {
   return { stt: createStt(settings), llm: createLlm(settings), tts: createTts(settings) };
 }
@@ -51,6 +84,7 @@ function createStt(s: Settings): SpeechToText {
     commitStrategy: s.stt.commitStrategy,
     vadSilenceSecs: s.stt.vadSilenceSecs,
     zeroRetention: s.elevenlabs.zeroRetention,
+    connectTimeoutMs: s.stt.connectTimeoutMs,
   });
 }
 
@@ -85,7 +119,7 @@ export async function createScheduling(s: Settings, tenantId: string, log?: Logg
   return new MemorySchedulingSystem({ tenantId, dataset });
 }
 
-function createTts(s: Settings): TextToSpeech {
+export function createTts(s: Settings): TextToSpeech {
   if (s.tts.provider === 'fake') return new FakeTextToSpeech();
   if (s.tts.voiceId === undefined) {
     throw new ConfigError('No TTS voice: set "voiceId" in the clinic profile (profile.json), or MUJEEB_TTS_VOICE_ID in .env as the default');
@@ -109,6 +143,7 @@ export function buildSessionConfig(s: Settings): VoiceSessionConfig {
     ttsFirstAudioTimeoutMs: s.tts.firstAudioTimeoutMs,
     playbackGraceMs: 4000,
     clearAckTimeoutMs: 1000,
+    sttConnect: { attempts: 2, attemptTimeoutMs: s.stt.connectTimeoutMs, retryDelayMs: 250 },
     sttReconnect: { maxAttempts: 4, baseDelayMs: 250 },
     chunker: DEFAULT_CHUNKER_OPTIONS,
     bargeIn: DEFAULT_BARGE_IN_POLICY,
