@@ -30,5 +30,10 @@ export interface SttOpenOptions {
 
 export interface SpeechToText {
   readonly name: string;
+  /**
+   * Resolves once the provider has confirmed the session and transcribes, not merely when a connection opens.
+   * A failure before that (e.g. an auth error) rejects instead, and the stream then emits no events. A phone
+   * call is answered only after this resolves.
+   */
   open(options: SttOpenOptions): Promise<SttStream>;
 }

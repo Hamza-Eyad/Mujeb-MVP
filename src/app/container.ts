@@ -84,6 +84,7 @@ function createStt(s: Settings): SpeechToText {
     commitStrategy: s.stt.commitStrategy,
     vadSilenceSecs: s.stt.vadSilenceSecs,
     zeroRetention: s.elevenlabs.zeroRetention,
+    connectTimeoutMs: s.stt.connectTimeoutMs,
   });
 }
 

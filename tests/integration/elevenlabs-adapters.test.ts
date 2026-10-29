@@ -9,7 +9,7 @@ import { CancelledError, ConfigError, ProviderError } from '../../src/core/error
 import { silentLogger, type Logger } from '../../src/core/logger.js';
 import type { SttEvent } from '../../src/ports/speech-to-text.js';
 import type { TtsAudioChunk } from '../../src/ports/text-to-speech.js';
-import { waitFor } from '../support/session-harness.js';
+import { delay, waitFor } from '../support/session-harness.js';
 
 /** Local stand-in for the ElevenLabs WebSocket APIs (protocol per the official API reference). */
 interface FakeProvider {
@@ -140,15 +140,92 @@ describe('ElevenLabsRealtimeStt', () => {
     await stream.close();
   });
 
-  it('reports a fatal auth error as a non-retryable close', async () => {
-    const provider = await startProvider({
-      onConnection: (conn) => conn.ws.send(JSON.stringify({ message_type: 'auth_error', error: 'invalid key' })),
-    });
+  it('reports a fatal auth error during the session as a non-retryable close', async () => {
+    const provider = await startProvider({ onConnection: (conn) => conn.ws.send(JSON.stringify({ message_type: 'session_started', config: {} })) });
     const events: SttEvent[] = [];
     await sttOptions(provider.baseUrl).open({ format: pcm16(16000), onEvent: (e) => events.push(e), signal: new AbortController().signal, log: silentLogger });
+    provider.connections[0]?.ws.send(JSON.stringify({ message_type: 'auth_error', error: 'invalid key' }));
     await waitFor(() => events.some((e) => e.type === 'closed'));
     const closed = events.find((e) => e.type === 'closed');
     expect(closed?.type === 'closed' && closed.error).toMatchObject({ kind: 'auth', retryable: false });
+  });
+
+  it('open() resolves on session_started, not when the WebSocket opens', async () => {
+    const provider = await startProvider({
+      onConnection: (conn) => setTimeout(() => conn.ws.send(JSON.stringify({ message_type: 'session_started', config: {} })), 150),
+    });
+    const events: SttEvent[] = [];
+    let opened = false;
+    const started = Date.now();
+    const opening = sttOptions(provider.baseUrl)
+      .open({ format: pcm16(16000), onEvent: (e) => events.push(e), signal: new AbortController().signal, log: silentLogger })
+      .then((stream) => {
+        opened = true;
+        return stream;
+      });
+    await waitFor(() => provider.connections.length === 1, 1000, 'connection');
+    await delay(50);
+    expect(opened).toBe(false); // the socket is open; the session is not started yet
+    const stream = await opening;
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+    expect(events.map((e) => e.type)).toEqual(['ready']);
+    await stream.close();
+  });
+
+  it('no session_started: open() times out (retryable), closes the socket, and reports nothing afterwards', async () => {
+    const closed: number[] = [];
+    const provider = await startProvider({ onConnection: (conn) => conn.ws.on('close', (code) => closed.push(code)) });
+    const events: SttEvent[] = [];
+    const error = await sttOptions(provider.baseUrl, { connectTimeoutMs: 200 })
+      .open({ format: pcm16(16000), onEvent: (e) => events.push(e), signal: new AbortController().signal, log: silentLogger })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: 'timeout', retryable: true });
+    await waitFor(() => closed.length === 1, 1000, 'socket closed by the client');
+    expect(provider.connections).toHaveLength(1);
+    await delay(30);
+    expect(events).toEqual([]); // no `closed` event for a stream that never started (it would start a reconnect)
+  });
+
+  it('auth_error before session_started: open() rejects at once, not retryable, and closes the socket', async () => {
+    const closed: number[] = [];
+    const provider = await startProvider({
+      onConnection: (conn) => {
+        conn.ws.on('close', (code) => closed.push(code));
+        conn.ws.send(JSON.stringify({ message_type: 'auth_error', error: 'invalid key' }));
+      },
+    });
+    const events: SttEvent[] = [];
+    const started = Date.now();
+    const error = await sttOptions(provider.baseUrl, { connectTimeoutMs: 5000 })
+      .open({ format: pcm16(16000), onEvent: (e) => events.push(e), signal: new AbortController().signal, log: silentLogger })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: 'auth', retryable: false });
+    expect(Date.now() - started).toBeLessThan(1000); // not the 5s timeout
+    await waitFor(() => closed.length === 1, 1000, 'socket closed by the client');
+    await delay(30);
+    expect(events).toEqual([]);
+  });
+
+  it('cancelled while waiting for session_started: rejects with the reason and closes the socket', async () => {
+    const closed: number[] = [];
+    const provider = await startProvider({ onConnection: (conn) => conn.ws.on('close', (code) => closed.push(code)) });
+    const controller = new AbortController();
+    const opening = sttOptions(provider.baseUrl, { connectTimeoutMs: 5000 }).open({ format: pcm16(16000), onEvent: () => {}, signal: controller.signal, log: silentLogger });
+    await waitFor(() => provider.connections.length === 1, 1000, 'connection');
+    await delay(30); // the WebSocket is open now
+    controller.abort(new CancelledError('caller_hung_up'));
+    await expect(opening).rejects.toBeInstanceOf(CancelledError);
+    await waitFor(() => closed.length === 1, 1000, 'socket closed by the client');
+  });
+
+  it('the server closes before session_started: open() rejects as unavailable (retryable)', async () => {
+    const provider = await startProvider({ onConnection: (conn) => conn.ws.close(1011, 'overloaded') });
+    const events: SttEvent[] = [];
+    const error = await sttOptions(provider.baseUrl, { connectTimeoutMs: 5000 })
+      .open({ format: pcm16(16000), onEvent: (e) => events.push(e), signal: new AbortController().signal, log: silentLogger })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: 'unavailable', retryable: true });
+    expect(events).toEqual([]);
   });
 
   it('maps a rejected handshake to a ProviderError', async () => {
@@ -189,7 +266,7 @@ describe('ElevenLabsRealtimeStt', () => {
   });
 
   it('accepts telephony μ-law input without transcoding', async () => {
-    const provider = await startProvider({});
+    const provider = await startProvider({ onConnection: (conn) => conn.ws.send(JSON.stringify({ message_type: 'session_started', config: {} })) });
     const stream = await sttOptions(provider.baseUrl).open({
       format: { encoding: 'mulaw', sampleRate: 8000, channels: 1 },
       onEvent: () => {},

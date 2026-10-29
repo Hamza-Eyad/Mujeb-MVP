@@ -95,7 +95,7 @@ export interface Settings {
     languageCode: string;
     commitStrategy: CommitStrategy;
     vadSilenceSecs: number;
-    /** Each attempt to open STT when a session starts (two attempts). */
+    /** Each attempt to open STT, until the provider confirms the session (two attempts when a session starts). */
     connectTimeoutMs: number;
   };
   tts: {
