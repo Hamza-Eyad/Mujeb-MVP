@@ -109,8 +109,9 @@ Deliverables:
 - Verified 2026-10-25: a MicroSIP softphone called Asterisk in WSL, which connected to Mujeeb with live providers, and the call booked a sandbox appointment end to end.
 - This is a **local lab, not a commercial connection**. There is no carrier line, real number, or cloud server yet.
 
-**Step 2, still in the lab — IN PROGRESS (started 2026-10-28)**
+**Step 2, still in the lab — DONE (2026-10-29, PR #5), except items 5 and 7 below**
 - Plan and results: `plans/2026-10-28-phase-4-step-2-lab.md`.
+- Final lab check (2026-10-29): after the permission change, MicroSIP re-registered (refreshes every 300 s) and two calls to 100 played and echoed. No paid provider was used.
 - Done:
   - turn metrics per channel (phone/browser) with the call ID,
   - flush confirmation matched to its own `GET_STATUS`,
@@ -126,9 +127,11 @@ Deliverables:
   - Mujeeb answers only after the STT provider confirms the session (`session_started`, not just an open WebSocket). There are at most two attempts of 3 s each, a stalled attempt is aborted and its socket closed, and the 7 s limit stays below the 10 s `Dial` timeout. A call whose STT is not ready, or fails first (e.g. an auth error), is turned away unanswered and hears the apology. Lab: 6.4 s of ringing, then the apology.
   - The lab's Asterisk config files that hold secrets are root-only (`600`).
   - CI runs `npm run check` on Node 24 for every pull request.
-- Open quality issue: detecting an interruption on the phone takes 1.6–5.8 s (p50 3.5 s, n=4). This is separate from stopping the audio, which takes under 3 ms. Not solved.
-- Still waiting: the transcript diagnosis of the confirmation and national-ID issues. Transcripts stay off.
-- Last, and not blocking the carrier line: call control separate from audio, plus the ARI transfer spike.
+- Not done in step 2:
+  - **Open quality issue, next:** detecting an interruption on the phone takes 1.6–5.8 s (p50 3.5 s, n=4). This is separate from stopping the audio, which takes under 3 ms. A diagnosis plan with free local measurements comes first, with no behavior change before it.
+  - **Item 5, waiting on owner:** the transcript diagnosis of the confirmation and national-ID issues. Transcripts stay off.
+  - **Item 7, last and not blocking the carrier line:** call control separate from audio, and the ARI transfer spike.
+  - Real-provider concurrency, and timing of the answer-after-STT flow with real providers. Deferred to save credits.
 
 **Next steps (not started):**
 - **Then a real line:**
