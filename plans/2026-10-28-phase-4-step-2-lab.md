@@ -508,7 +508,7 @@
   - `actions/checkout` v7.0.1 و`actions/setup-node` v7.1.0، مثبتتان على commit SHA.
   - `persist-credentials: false`.
   - Node من `.nvmrc` (24) مع cache لـnpm.
-- النتيجة على GitHub تُكتب في وصف الـPR بعد التشغيل.
+- **أول تشغيل على Linux** (commit `b95c192`): ناجح من أول مرة على Node 24.22.1. ‏26 ملفًا و520 اختبارًا، ولم يظهر أي افتراض خاص بـWindows.
 
 ## التحقق
 
