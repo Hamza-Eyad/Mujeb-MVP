@@ -14,6 +14,8 @@
 # Secrets are generated on first run and kept outside the repository, readable by root only:
 #   /etc/asterisk/lab-softphone-password     MicroSIP account password
 #   /etc/asterisk/mujeeb-telephony-password  shared secret = MUJEEB_TELEPHONY_PASSWORD in Mujeeb's .env
+# The config files that embed them (pjsip.conf, websocket_client.conf) are root-only too (600): the lab
+# Asterisk runs as root. A production host runs Asterisk as its own user: there they are 640 root:asterisk.
 #
 # Options (environment):
 #   MUJEEB_LAB_RECORD=1   record calls to 300 under /var/spool/asterisk/monitor (lab diagnosis only;
@@ -40,6 +42,11 @@ secret() { # file, bytes
 PASS="$(secret "$CONF/lab-softphone-password" 8)"
 GWPASS="$(secret "$CONF/mujeeb-telephony-password" 16)"
 
+private_file() { # path; content on stdin. Mode 600 before any content is written, even over an existing file.
+  install -m 600 /dev/null "$1"
+  cat > "$1"
+}
+
 cat > "$CONF/modules.conf" <<'EOF'
 [modules]
 autoload = yes
@@ -59,7 +66,7 @@ rtpstart = 10000
 rtpend = 10100
 EOF
 
-cat > "$CONF/pjsip.conf" <<EOF
+private_file "$CONF/pjsip.conf" <<EOF
 ; Lab only. Loopback transport: nothing outside this PC can reach it.
 [transport-udp]
 type = transport
@@ -95,7 +102,7 @@ EOF
 
 # One WebSocket per call to Mujeeb (per_call_config). username/password arrive as HTTP Basic auth and must
 # match MUJEEB_TELEPHONY_USERNAME / MUJEEB_TELEPHONY_PASSWORD; the port is MUJEEB_TELEPHONY_PORT.
-cat > "$CONF/websocket_client.conf" <<EOF
+private_file "$CONF/websocket_client.conf" <<EOF
 [mujeeb]
 type = websocket_client
 connection_type = per_call_config
