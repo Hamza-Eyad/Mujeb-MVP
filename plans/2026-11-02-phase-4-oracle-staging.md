@@ -466,10 +466,66 @@ ElevenLabs (STT/TTS) · OpenAI (LLM) · Medplum sandbox (اختياري)
 - `git status` والفرع في المجلد الرئيسي: كما كانا قبل البدء، ناقص ملف الخطة فقط.
 - **الناتج للمراجعة:** قائمة الملفات، و`git diff main --stat`، ونتائج الفحوص. **ولا انتقال للمرحلة 2 قبل موافقتك.**
 
+#### نتائج المرحلة 1 (2026-11-02): ✓ كل الفحوص الممكنة بدون خادم نجحت
+
+**الـWorktree والـcommits** (محلية فقط، بلا push):
+- `C:\Users\hamza\Desktop\Mujeb-MVP-staging`، فرع `phase4-staging` من `main` ‏`49de1d7` (= `origin/main`).
+- `55728ae`: الخطة v2.1 كما اعتُمدت، بتطابق حرفي مع ملف الموافقة (`cmp`)، قبل أي ملف نشر.
+- `cb9c728`: ‏`deploy/asterisk/staging/` (8 ملفات).
+- `1a0a11a`: ‏`deploy/staging/` (13 ملفًا).
+- والمحفوظ في git كله LF، فنسخة Linux على الخادم سليمة.
+
+**النتائج:**
+
+| الفحص | النتيجة |
+|---|---|
+| `npm run check` (Node 24.21.0) | ✓ typecheck وlint، و27 ملفًا و**537 اختبارًا**. و`git diff main -- src tests config docs` فارغ، فالعدد هو نفسه في `main` |
+| `bash -n` لـ12 سكربتًا | ✓ |
+| توليد إعدادات Asterisk وفحصها (4 أوضاع: echo بلا trunk، ومحاكاة 127.0.0.1، وIP مع tcp وqualify، وregistration مع `DID_SOURCE=to`) | ✓ **49/49**: 18 فحص محتوى، و8 حالات `host.env` خاطئة رُفضت قبل الكتابة، و22 مخالفة مزروعة كشفها `check-asterisk-config.sh` كلها، منها: Dial صادر، و`MixMonitor`، وخيار تسجيل في Dial، واقتطاع الـDID، و`autoload=yes`، وCDR، وnotice في السجل، و`full`/`security`/syslog، وAMI/HTTP، وgateway خارج loopback، وendpoint ‏`anonymous` |
+| `privacy-scan.sh` على شجرة ملفات تجريبية | ✓ **13/13**: الشجرة النظيفة تمر (رقم مقنّع، و`call_id` بنقطة، وDID أرضي، و`text_chars`). وكل تسرب اصطناعي مزروع اكتُشف في مكانه الصحيح، **ولم تظهر القيمة في المخرجات**: NOTICE الـ`From` في journal، وتتبع `pjsip logger`، وسطر stderr، وملف `.gz` مدوَّر، ورقم بشكل هوية، و`user_text`، وحقل `text`، و`/var/log/syslog`، و`/var/log/messages`، وملف تسجيل، وملف CDR. وjournal غير مقروء = فشل لا نجاح |
+| قالب `mujeeb.env.example` و`routes.example.json` مع الكود الحقيقي (بوابة لمدة 6 ث على `127.0.0.1:18790`، كل المزودين وهميون) | ✓ **13/13**: التطبيق يقبل القالب، والمساران يُحمَّلان، و`app.config` يظهر، ولا مفاتيح، و`transcripts_in_logs:false`، والسر المشترك لا يُطبع. ومسار routes خاطئ يعطي `exit 1` و`Configuration error`، وهما ما تراقبه نافذة النشر. ولم يبق أي شيء يستمع بعد الاختبار |
+
+- أدوات الاختبار خارج المستودع، في الـscratchpad (`stage1-tests/`).
+- **ملاحظة المالك عن stderr والسجلات المستقلة:** ‏`privacy-scan.sh` يفحص stdout وstderr معًا لخدمات asterisk وmujeeb-telephony وmujeeb-healthcheck. ويفحص أيضًا كل ملفات `/var/log/asterisk` (والمدوّرة)، و`syslog*` و`messages*`، وسجلات `turns`. ويشترط خلو مجلدات التسجيل والـcall files والـvoicemail وCDR/CEL من أي ملف.
+- **وتمنعها الإعدادات من البداية:** الـsecurity log، وقنوات syslog، والـqueue log، وCDR/CEL كلها مرفوضة في `check-asterisk-config.sh`.
+- **غير مفحوص:** قاعدة astdb ‏(SQLite)، لأن الـdialplan لا يكتب فيها (لا `DB()`).
+
+**خطآن وجدتهما في مراجعتي للسكربتات، وأُصلحا قبل الـcommit:**
+1. **`readlink -f`** يرجع مسارًا حتى لو الرابط غير موجود. في أول نشر كان `previous` سيشير إلى `current`، وعند فشل النشر كان "الرجوع" سيعود لنفس الإصدار الفاشل. صار `readlink -e`.
+2. **`cmd | grep -q` مع `pipefail`:** ‏`grep -q` يخرج عند أول تطابق، فقد يأخذ الكاتب SIGPIPE ويُحسب الأنبوب فاشلًا. ومن أمثلته "لا يوجد app.config"، الذي يسبب تراجعًا بلا داعٍ. صار `has()` (يعتمد على `grep -c`، فيقرأ كل المدخلات).
+
+**التصحيحات التسعة والملفات الخمسة (0-ب): كلها ضرورية ومحصورة في المرحلة 1.**
+- كل ملف إضافي مستخدم فعلًا:
+  - `lib.sh` من 6 سكربتات.
+  - `check-asterisk-config.sh` من `setup-asterisk.sh`.
+  - `firewall-sip.sh` من `trunk-check.sh`.
+  - `synthetic-calls.sh` و`sipp/inbound-call.xml` لاختبارات المرحلة 3 المكتوبة في v2.
+- ولم يُضف شيء خارج قائمة الملفات في القسم 8.
+
+**مؤجل إلى المرحلة 3 (يحتاج Linux وAsterisk حقيقيين، ولا يُختبر في WSL حسب العزل):**
+- `shellcheck` لكل السكربتات.
+- تحقق SIPp من `inbound-call.xml`، وهو مكتوب ولم يُشغَّل.
+- قائمة الـmodules الصريحة: Asterisk يبدأ بها، والمكالمات تعمل.
+- `systemd-analyze verify` للوحدات.
+- `flock` وiptables و`ss`.
+- **الشرط الإلزامي لعزل journald، مع التجربة الضابطة** (المرحلة 3).
+- مصفوفة T1–T11، وكل `bootstrap-host.sh` و`setup-asterisk.sh` في الوضع الحي.
+
+**العزل** [مؤكد]:
+- المجلد الرئيسي على `main` ونظيف، وملف الخطة نُقل منه.
+- لا WSL، ولا Asterisk محلي.
+- لا موارد Oracle، ولا push، ولا PR.
+- لا طلب مدفوع: كل التشغيل بمزودين وهميين، ولا مفاتيح.
+- ‏`npm ci` من سجل npm المجاني.
+
+**اختياري، لم يُنفَّذ:**
+- سطر `deploy/staging/** text eol=lf` في `.gitattributes`.
+- المحفوظ في git سليم (LF)، لكن نسخة Windows من هذه الملفات تصير CRLF. وهذا لا يهم إلا إذا نُسخت يدويًا من ويندوز إلى الخادم.
+
 ### المرحلة 2 💰: التكلفة، ثم الخادم، ثم الـbootstrap
 
 1. **قبل الإنشاء:**
-   - Cost Estimator في حسابك بالمواصفات الدقيقة: الـshape، والقرص 50GB ‏balanced، والـReserved IP، وnسخ boot volume، والضريبة.
+   - Cost Estimator في حسابك بالمواصفات الدقيقة: الـshape، والقرص 50GB ‏balanced، والـReserved IP، ونسخ boot volume، والضريبة.
    - تحديد نوع الحساب: Free Tier أو تجربة أو pay-as-you-go، والمنطقة الرئيسية.
    - Budget بحد شهري (مثلًا 200 SAR)، وتنبيهات عند 50% و80% و100%.
    - **إذا زاد التقدير عن هذه الخطة بأكثر من 10%: توقف وتقرير.**
