@@ -100,6 +100,20 @@ describe('TurnTimeline', () => {
     expect(t.relativeMarks()['playback_start']).toBe(900);
   });
 
+  it('splits the barge-in reaction into an STT part and a policy part that add up', () => {
+    const t = new TurnTimeline(() => 0);
+    t.mark('barge_in_speech_start', { at: 1000 }); // first VAD start while speaking: echo or noise
+    t.mark('barge_in_segment_start', { at: 2500 });
+    t.mark('barge_in_first_partial', { at: 3900 });
+    t.mark('interrupt_requested', { at: 4300 });
+    expect(t.durations()).toEqual({
+      barge_in_reaction_ms: 3300,
+      barge_in_reaction_segment_ms: 1800,
+      barge_in_stt_ms: 1400,
+      barge_in_policy_ms: 400,
+    });
+  });
+
   it('allows overwrite for moving marks', () => {
     const t = new TurnTimeline(() => 0);
     t.mark('user_speech_end', { at: 10 });

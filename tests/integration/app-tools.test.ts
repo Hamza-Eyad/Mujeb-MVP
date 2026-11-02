@@ -162,6 +162,34 @@ describe('latency report', () => {
     expect(text).toContain('channels: phone 2, browser 1, unknown 1');
     expect(text.indexOf('── channel: phone')).toBeLessThan(text.indexOf('── channel: browser'));
   });
+
+  it('sums what was heard while Mujeeb spoke, per channel, with the barge-in parts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mujeeb-report-'));
+    const heard = (counts: object) => ({ vad_starts: 0, transcripts: 0, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 0, ...counts });
+    const lines = [
+      { channel: 'phone', outcome: 'completed', false_interruptions: 0, durations_ms: {}, barge_in: heard({ vad_starts: 2 }) },
+      { channel: 'phone', outcome: 'interrupted', false_interruptions: 0, durations_ms: { barge_in_stt_ms: 1400, barge_in_policy_ms: 400 }, barge_in: heard({ vad_starts: 1, transcripts: 2, candidates: 1, first_words: 1 }) },
+      { channel: 'phone', outcome: 'interrupted', false_interruptions: 0, durations_ms: { barge_in_stt_ms: 1600, barge_in_policy_ms: 0 }, barge_in: heard({ vad_starts: 1, transcripts: 3, ignored: { echo: 1, backchannel: 1, empty: 0 }, first_words: 4 }) },
+      { channel: 'browser', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 900 } },
+    ];
+    writeFileSync(join(dir, 'turns-2026-11-02.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+    const report = await buildLatencyReport(dir);
+    expect(report.byChannel['phone']?.bargeIn).toEqual({
+      turns: 3,
+      vadOnlyTurns: 1,
+      vadStarts: 4,
+      transcripts: 5,
+      ignored: { echo: 1, backchannel: 1, empty: 0 },
+      candidates: 1,
+      firstWords: { '1': 1, '3+': 1 },
+    });
+    expect(report.byChannel['browser']?.bargeIn.turns).toBe(0);
+    expect(report.byChannel['phone']?.rows.find((r) => r.metric === 'barge_in_stt_ms')).toMatchObject({ count: 2, p50: 1400, max: 1600 });
+    const text = formatLatencyReport(report);
+    expect(text).toContain('heard while speaking: turns 3 (VAD only 1)');
+    expect(text).toContain('first words of interrupting speech: 1×1, 3+×1');
+    expect(text).toContain('barge_in_policy_ms');
+  });
 });
 
 describe('render-prompt (fixed telephony prompts, rendered once)', () => {

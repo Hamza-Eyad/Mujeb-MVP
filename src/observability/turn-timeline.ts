@@ -16,6 +16,8 @@ export const TURN_MARKS = [
   'playback_start',
   'playback_end',
   'barge_in_speech_start',
+  'barge_in_segment_start',
+  'barge_in_first_partial',
   'barge_in_candidate',
   'interrupt_requested',
   'playback_stopped',
@@ -32,7 +34,14 @@ export interface TurnDurations {
   first_audio_after_commit_ms?: number;
   playback_buffer_ms?: number;
   e2e_ms?: number;
+  /** From the first VAD start while Mujeeb spoke (may be echo or noise) to the interrupt decision. */
   barge_in_reaction_ms?: number;
+  /** The same decision, from the start of the VAD segment the interrupting speech began in. Equals stt + policy. */
+  barge_in_reaction_segment_ms?: number;
+  /** That segment's start → the first transcript of the interrupting speech. */
+  barge_in_stt_ms?: number;
+  /** First transcript of the interrupting speech → the interrupt decision (waiting for more words). */
+  barge_in_policy_ms?: number;
   interrupt_stop_ms?: number;
   /** Sum of tool execution times in a tool-using turn (set by the session, not derived from marks). */
   tools_ms?: number;
@@ -47,6 +56,9 @@ export const DURATION_KEYS: readonly (keyof TurnDurations)[] = [
   'playback_buffer_ms',
   'e2e_ms',
   'barge_in_reaction_ms',
+  'barge_in_reaction_segment_ms',
+  'barge_in_stt_ms',
+  'barge_in_policy_ms',
   'interrupt_stop_ms',
   'tools_ms',
 ];
@@ -95,6 +107,9 @@ export class TurnTimeline {
       playback_buffer_ms: span('tts_first_audio', 'playback_start'),
       e2e_ms: span('user_speech_end', 'playback_start'),
       barge_in_reaction_ms: span('barge_in_speech_start', 'interrupt_requested'),
+      barge_in_reaction_segment_ms: span('barge_in_segment_start', 'interrupt_requested'),
+      barge_in_stt_ms: span('barge_in_segment_start', 'barge_in_first_partial'),
+      barge_in_policy_ms: span('barge_in_first_partial', 'interrupt_requested'),
       interrupt_stop_ms: span('interrupt_requested', 'playback_stopped'),
     };
     for (const key of DURATION_KEYS) if (result[key] === undefined) delete result[key];

@@ -6,7 +6,7 @@ import { CancelledError, ProviderError, errorSummary } from '../core/errors.js';
 import { newTurnId } from '../core/ids.js';
 import type { Logger } from '../core/logger.js';
 import type { TenantContext } from '../core/tenant.js';
-import type { TurnOutcome, TurnSummary, TurnSummarySink } from '../observability/turn-metrics.js';
+import type { BargeInStats, TurnOutcome, TurnSummary, TurnSummarySink } from '../observability/turn-metrics.js';
 import { type TurnMark, TurnTimeline } from '../observability/turn-timeline.js';
 import type { AudioTransport, TransportEvent } from '../ports/audio-transport.js';
 import type { LanguageModel } from '../ports/language-model.js';
@@ -121,9 +121,17 @@ interface AgentRun {
   committed: number;
 }
 
+/** The STT utterance heard while the turn played: when its first transcript arrived, and the VAD segment it began in. */
+interface HeardUtterance {
+  readonly firstAt: number;
+  readonly words: number;
+  readonly segmentStart?: number;
+}
+
 interface ActiveTurn {
   readonly id: string;
   readonly kind: 'user' | 'greeting';
+  readonly beganAt: number;
   /** 1, 2, … per caller utterance (a continued utterance keeps its number); 0 for the greeting. */
   readonly userTurn: number;
   agentRun?: AgentRun;
@@ -144,6 +152,8 @@ interface ActiveTurn {
   dismissedTranscript?: string;
   falseInterruptTimer?: NodeJS.Timeout;
   falseInterruptions: number;
+  readonly bargeIn: BargeInStats;
+  heard?: HeardUtterance;
   reason?: string;
   finalized: boolean;
 }
@@ -177,6 +187,7 @@ export class VoiceSession {
   private lastAgentRun: AgentRun | null = null;
   private lastAssistantText = '';
   private lastPlaybackEndAt = Number.NEGATIVE_INFINITY;
+  private lastVadStartAt = Number.NEGATIVE_INFINITY;
   private lastRttMs: number | undefined;
   private sttBuffer: Uint8Array[] = [];
   private sttBufferedBytes = 0;
@@ -302,7 +313,12 @@ export class VoiceSession {
       const vadEvent = this.vad.process(pcm16Samples(data), format.sampleRate);
       if (vadEvent?.type === 'speech_start') {
         const at = this.now() - vadEvent.startedMsAgo;
-        if (this.state === 'speaking') this.current?.timeline.mark('barge_in_speech_start', { at });
+        this.lastVadStartAt = at;
+        const speaking = this.state === 'speaking' ? this.current : null;
+        if (speaking) {
+          speaking.timeline.mark('barge_in_speech_start', { at });
+          speaking.bargeIn.vad_starts += 1;
+        }
         this.ensurePending().mark('user_speech_start', { at });
       } else if (vadEvent?.type === 'speech_end') {
         const at = this.now() - vadEvent.endedMsAgo;
@@ -496,7 +512,10 @@ export class VoiceSession {
   private onCommitted(text: string): void {
     const turn = this.current;
     if (turn && this.state === 'speaking') {
-      if (text === '') return;
+      if (text === '') {
+        turn.heard = undefined; // the STT utterance ended without words
+        return;
+      }
       if (this.handleSpeakingTranscript(turn, text, true)) this.startUserTurn(text);
       return;
     }
@@ -531,6 +550,8 @@ export class VoiceSession {
   private handleSpeakingTranscript(turn: ActiveTurn, text: string, final: boolean): boolean {
     const agent = { fullText: turn.sentText, spokenSoFar: turn.alignmentSeen ? turn.alignedText : turn.sentText };
     const decision = evaluateBargeIn(text, agent, this.cfg.bargeIn, { final });
+    const heard = this.noteHeard(turn, decision);
+    if (final) turn.heard = undefined; // a committed transcript ends the STT utterance: what follows is new speech
     if (decision.action === 'ignore') {
       this.countIgnored(turn, decision, text);
       if (final && turn.paused) this.resumeAfterFalseInterruption(turn, `final_${decision.reason}`);
@@ -543,14 +564,35 @@ export class VoiceSession {
     }
     this.emit({ type: 'user_partial', text });
     this.ensurePending().mark('stt_first_partial');
+    if (heard.segmentStart !== undefined) turn.timeline.mark('barge_in_segment_start', { at: heard.segmentStart });
+    turn.timeline.mark('barge_in_first_partial', { at: heard.firstAt });
+    turn.bargeIn.first_words = heard.words;
     this.interrupt(turn, final ? 'barge_in_final' : 'barge_in');
     return true;
+  }
+
+  /**
+   * Measurement only, never a decision: counts the transcript, and opens the utterance it belongs to on its first
+   * transcript. The utterance's VAD segment is the latest one since the turn began; none if VAD heard nothing new.
+   */
+  private noteHeard(turn: ActiveTurn, decision: BargeInDecision): HeardUtterance {
+    const stats = turn.bargeIn;
+    stats.transcripts += 1;
+    const { reason } = decision;
+    if (reason === 'echo' || reason === 'backchannel' || reason === 'empty') stats.ignored[reason] += 1;
+    turn.heard ??= {
+      firstAt: this.now(),
+      words: decision.words,
+      ...(this.lastVadStartAt >= turn.beganAt ? { segmentStart: this.lastVadStartAt } : {}),
+    };
+    return turn.heard;
   }
 
   private softPause(turn: ActiveTurn, text: string): void {
     if (turn.paused) return;
     turn.paused = true;
     turn.pausedAt = this.now();
+    turn.bargeIn.candidates += 1;
     turn.timeline.mark('barge_in_candidate');
     if (this.deps.transport.capabilities.pause) this.deps.transport.pause();
     turn.dismissedTranscript = normalizeArabic(text);
@@ -651,6 +693,7 @@ export class VoiceSession {
     const turn: ActiveTurn = {
       id: newTurnId(),
       kind,
+      beganAt: this.now(),
       userTurn: kind === 'user' ? (continuedUserTurn ?? ++this.userTurnCounter) : 0,
       epoch: ++this.epochCounter,
       controller: new AbortController(),
@@ -667,6 +710,7 @@ export class VoiceSession {
       paused: false,
       pausedAt: 0,
       falseInterruptions: 0,
+      bargeIn: { vad_starts: 0, transcripts: 0, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 0 },
       finalized: false,
     };
     timeline.turnId = turn.id;
@@ -919,6 +963,7 @@ export class VoiceSession {
       assistant_chars_sent: turn.sentText.length,
       ...(interrupted ? { assistant_chars_heard: turn.heardText.length, heard_text_estimated: !turn.alignmentSeen } : {}),
       false_interruptions: turn.falseInterruptions,
+      ...(turn.bargeIn.vad_starts > 0 || turn.bargeIn.transcripts > 0 ? { barge_in: { ...turn.bargeIn, ignored: { ...turn.bargeIn.ignored } } } : {}),
       ...(error ? { error } : {}),
       ...(this.cfg.logTranscripts ? { user_text: turn.userText, assistant_text: turn.sentText } : {}),
     };
