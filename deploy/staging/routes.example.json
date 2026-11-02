@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "key": "990300",
+      "agentProfile": "config/agents/demo-clinic",
+      "note": "Staging stage 3: the simulation route (simulate-trunk-call.sh and synthetic-calls.sh). Not a phone number."
+    },
+    {
+      "key": "REPLACE-WITH-THE-DID-AS-ASTERISK-PASSES-IT",
+      "agentProfile": "config/agents/demo-clinic",
+      "note": "Stage 6: ExaCall's DID exactly as stage 5 recorded it (no normalization). Copy to /etc/mujeeb/routes.json; never commit the real DID."
+    }
+  ]
+}

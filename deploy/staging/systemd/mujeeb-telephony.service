@@ -1,0 +1,38 @@
+# Staging server: Mujeeb's telephony gateway (installed by bootstrap-host.sh; deploy-mujeeb.sh restarts it).
+# Runs the current release, built by deploy-mujeeb.sh, with fake providers until the stage 7 approval
+# (/etc/mujeeb/mujeeb.env). Listens on 127.0.0.1 only: the code refuses any other address (DECISIONS A19).
+[Unit]
+Description=Mujeeb telephony gateway (staging)
+After=network-online.target
+Wants=network-online.target
+# A crash loop stops after 5 starts in 60 s, instead of restarting forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mujeeb
+Group=mujeeb
+WorkingDirectory=/opt/mujeeb/current
+# KEY=value lines, no quotes and no inline comments (systemd's format). root:mujeeb 0640.
+EnvironmentFile=/etc/mujeeb/mujeeb.env
+ExecStart=/opt/node/current/bin/node dist/app/cli.js telephony
+Restart=always
+RestartSec=1
+# SIGTERM closes every session at once (the code has no drain): callers hear Asterisk's apology.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/mujeeb
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

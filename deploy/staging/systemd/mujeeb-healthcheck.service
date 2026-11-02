@@ -1,0 +1,9 @@
+# Staging server: one run of the server health check (healthcheck.sh). Started by mujeeb-healthcheck.timer.
+# No carrier check: trunk-check.sh covers ExaCall, by hand.
+[Unit]
+Description=Mujeeb staging server health check
+After=asterisk.service mujeeb-telephony.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/mujeeb/current/deploy/staging/healthcheck.sh

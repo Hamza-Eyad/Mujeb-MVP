@@ -1,0 +1,11 @@
+# Staging server: run the server health check every 5 minutes. Enabled after the first deploy (README, stage 3):
+# before it, every run would fail.
+[Unit]
+Description=Mujeeb staging server health check, every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
