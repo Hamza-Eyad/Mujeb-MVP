@@ -1,0 +1,35 @@
+# Staging server: Asterisk as a service (installed by setup-asterisk.sh to /etc/systemd/system/asterisk.service).
+# Based on Asterisk 22.11.0's contrib/systemd/asterisk.service. Differences:
+# - Type=simple, not notify: build-asterisk.sh builds without libsystemd, so Asterisk sends no readiness notice.
+# - RuntimeDirectory: /run/asterisk (control socket) for the asterisk user.
+# - No LimitCORE=infinity: a core dump could hold call audio or numbers.
+# - Hardening lines (NoNewPrivileges, ProtectSystem, ProtectHome).
+[Unit]
+Description=Asterisk for Mujeeb staging (SIP trunk to Mujeeb's gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/var/lib/asterisk
+WorkingDirectory=/var/lib/asterisk
+User=asterisk
+Group=asterisk
+RuntimeDirectory=asterisk
+ExecStart=/usr/sbin/asterisk -mqf -C /etc/asterisk/asterisk.conf
+ExecReload=/usr/sbin/asterisk -rx 'core reload'
+Restart=always
+RestartSec=4
+LimitNOFILE=8192
+# Privacy: the daemon's console output (notice, verbose, `pjsip set logger`) must never be stored. In 22.11.0, -m does
+# not mute it (ast_opt_mute only affects remote consoles: main/asterisk.c), so stdout goes to /dev/null, as upstream
+# does. stderr stays in the journal for start-up failures; privacy-scan.sh scans it. Proven in stage 3, not assumed.
+StandardOutput=null
+StandardError=journal
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
