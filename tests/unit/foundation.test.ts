@@ -104,6 +104,7 @@ describe('TurnTimeline', () => {
     const t = new TurnTimeline(() => 0);
     t.mark('barge_in_speech_start', { at: 1000 }); // first VAD start while speaking: echo or noise
     t.mark('barge_in_segment_start', { at: 2500 });
+    t.mark('barge_in_segment_end', { at: 2900 });
     t.mark('barge_in_first_partial', { at: 3900 });
     t.mark('interrupt_requested', { at: 4300 });
     expect(t.durations()).toEqual({
@@ -111,6 +112,7 @@ describe('TurnTimeline', () => {
       barge_in_reaction_segment_ms: 1800,
       barge_in_stt_ms: 1400,
       barge_in_policy_ms: 400,
+      barge_in_segment_gap_ms: 1000,
     });
   });
 

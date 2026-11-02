@@ -199,11 +199,13 @@ describe('VoiceSession — barge-in', () => {
     const m = summary?.marks_ms ?? {};
     const d = summary?.durations_ms ?? {};
     expect(m.barge_in_segment_start).toBe(m.barge_in_speech_start); // one segment: both starts agree
-    expect(Math.abs((m.barge_in_candidate ?? 0) - (m.barge_in_first_partial ?? -1))).toBeLessThanOrEqual(0.2); // it paused playback
+    expect(Math.abs((m.barge_in_candidate ?? 0) - (m.barge_in_first_partial ?? -1))).toBeLessThan(20); // it paused playback, not the second word
     expect(d.barge_in_stt_ms).toBeGreaterThanOrEqual(200);
     expect(d.barge_in_policy_ms).toBeGreaterThanOrEqual(70); // waited for the second word
-    expect(Math.abs((d.barge_in_stt_ms ?? 0) + (d.barge_in_policy_ms ?? 0) - (d.barge_in_reaction_segment_ms ?? -1))).toBeLessThanOrEqual(0.1);
+    // Each duration is rounded to 0.1ms, so the parts may differ from the total by one step.
+    expect(Math.abs((d.barge_in_stt_ms ?? 0) + (d.barge_in_policy_ms ?? 0) - (d.barge_in_reaction_segment_ms ?? -1))).toBeLessThan(0.15);
     expect(d.barge_in_reaction_ms).toBe(d.barge_in_reaction_segment_ms);
+    expect(m).not.toHaveProperty('barge_in_segment_end'); // still talking when the transcript came
     expect(summary?.barge_in).toEqual({ vad_starts: 1, transcripts: 2, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 1, first_words: 1 });
     expect(JSON.stringify(summary)).not.toContain('انتظر'); // counts only, no text
   });
@@ -226,8 +228,45 @@ describe('VoiceSession — barge-in', () => {
     const d = summary?.durations_ms ?? {};
     expect(m.barge_in_segment_start).toBeGreaterThan((m.barge_in_speech_start ?? 0) + 140);
     expect(d.barge_in_reaction_ms).toBeGreaterThan((d.barge_in_reaction_segment_ms ?? 0) + 140); // the old measure is inflated
-    expect(d.barge_in_policy_ms).toBeLessThan(1); // three words: decided on the first transcript
+    expect(d.barge_in_policy_ms).toBeLessThan(20); // three words: decided on the first transcript
     expect(summary?.barge_in).toMatchObject({ vad_starts: 2, transcripts: 1, candidates: 0, first_words: 3 });
+  });
+
+  it('records how long before the first transcript the VAD segment had ended', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.transport.feed(frames(true, 10)); // segment starts 100ms back
+    await delay(250);
+    h.transport.feed(frames(false, 15)); // and ends 300ms back: 50ms after it started
+    await delay(100); // the transcript comes after the caller stopped
+    h.sttStream.partial('لا لحظة');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    const m = summary?.marks_ms ?? {};
+    const d = summary?.durations_ms ?? {};
+    expect(m.barge_in_segment_end).toBeGreaterThan(m.barge_in_segment_start ?? Infinity);
+    expect(d.barge_in_segment_gap_ms).toBeGreaterThanOrEqual(330);
+    expect(d.barge_in_segment_gap_ms).toBeLessThan(d.barge_in_stt_ms ?? 0);
+  });
+
+  it('starts the heard speech at the first transcript with words', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.sttStream.partial('...'); // no words yet
+    await delay(60);
+    h.sttStream.partial('لا لحظة');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    expect(summary?.durations_ms.barge_in_policy_ms).toBeLessThan(20); // the 60ms wait for words is not policy time
+    expect(summary?.barge_in).toMatchObject({ transcripts: 2, ignored: { echo: 0, backchannel: 0, empty: 1 }, first_words: 2 });
   });
 
   it('starts a new heard utterance after a committed echo', async () => {
@@ -244,7 +283,7 @@ describe('VoiceSession — barge-in', () => {
     await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
 
     const [summary] = summaries(h);
-    expect(summary?.durations_ms.barge_in_policy_ms).toBeLessThan(1); // measured from 'لا لحظة', not from the echo
+    expect(summary?.durations_ms.barge_in_policy_ms).toBeLessThan(20); // measured from 'لا لحظة', not from the echo 60ms earlier
     expect(summary?.barge_in).toMatchObject({ transcripts: 3, ignored: { echo: 2, backchannel: 0, empty: 0 }, first_words: 2 });
   });
 

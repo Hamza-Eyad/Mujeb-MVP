@@ -121,11 +121,15 @@ interface AgentRun {
   committed: number;
 }
 
-/** The STT utterance heard while the turn played: when its first transcript arrived, and the VAD segment it began in. */
+/**
+ * The STT utterance heard while the turn played: when its first transcript with words arrived, and the VAD segment
+ * it began in (its end too, if the segment was already over by then).
+ */
 interface HeardUtterance {
   readonly firstAt: number;
   readonly words: number;
   readonly segmentStart?: number;
+  readonly segmentEnd?: number;
 }
 
 interface ActiveTurn {
@@ -188,6 +192,7 @@ export class VoiceSession {
   private lastAssistantText = '';
   private lastPlaybackEndAt = Number.NEGATIVE_INFINITY;
   private lastVadStartAt = Number.NEGATIVE_INFINITY;
+  private lastVadEndAt = Number.NEGATIVE_INFINITY;
   private lastRttMs: number | undefined;
   private sttBuffer: Uint8Array[] = [];
   private sttBufferedBytes = 0;
@@ -322,6 +327,7 @@ export class VoiceSession {
         this.ensurePending().mark('user_speech_start', { at });
       } else if (vadEvent?.type === 'speech_end') {
         const at = this.now() - vadEvent.endedMsAgo;
+        this.lastVadEndAt = at;
         const turn = this.current;
         if (!this.pendingTimeline && turn?.kind === 'user' && !turn.timeline.has('user_speech_end')) {
           turn.timeline.mark('user_speech_end', { at }); // VAD settled after a fast commit
@@ -564,28 +570,38 @@ export class VoiceSession {
     }
     this.emit({ type: 'user_partial', text });
     this.ensurePending().mark('stt_first_partial');
-    if (heard.segmentStart !== undefined) turn.timeline.mark('barge_in_segment_start', { at: heard.segmentStart });
-    turn.timeline.mark('barge_in_first_partial', { at: heard.firstAt });
-    turn.bargeIn.first_words = heard.words;
+    if (heard) this.markHeard(turn, heard);
     this.interrupt(turn, final ? 'barge_in_final' : 'barge_in');
     return true;
   }
 
   /**
    * Measurement only, never a decision: counts the transcript, and opens the utterance it belongs to on its first
-   * transcript. The utterance's VAD segment is the latest one since the turn began; none if VAD heard nothing new.
+   * transcript with words. The utterance's VAD segment is the latest one since the turn began; none if VAD heard
+   * nothing new.
    */
-  private noteHeard(turn: ActiveTurn, decision: BargeInDecision): HeardUtterance {
+  private noteHeard(turn: ActiveTurn, decision: BargeInDecision): HeardUtterance | undefined {
     const stats = turn.bargeIn;
     stats.transcripts += 1;
     const { reason } = decision;
     if (reason === 'echo' || reason === 'backchannel' || reason === 'empty') stats.ignored[reason] += 1;
-    turn.heard ??= {
+    if (turn.heard || decision.words === 0) return turn.heard;
+    const start = this.lastVadStartAt >= turn.beganAt ? this.lastVadStartAt : undefined;
+    turn.heard = {
       firstAt: this.now(),
       words: decision.words,
-      ...(this.lastVadStartAt >= turn.beganAt ? { segmentStart: this.lastVadStartAt } : {}),
+      ...(start !== undefined ? { segmentStart: start } : {}),
+      ...(start !== undefined && this.lastVadEndAt > start ? { segmentEnd: this.lastVadEndAt } : {}),
     };
     return turn.heard;
+  }
+
+  /** The interrupting speech, on the turn's timeline: its VAD segment and its first transcript. */
+  private markHeard(turn: ActiveTurn, heard: HeardUtterance): void {
+    if (heard.segmentStart !== undefined) turn.timeline.mark('barge_in_segment_start', { at: heard.segmentStart });
+    if (heard.segmentEnd !== undefined) turn.timeline.mark('barge_in_segment_end', { at: heard.segmentEnd });
+    turn.timeline.mark('barge_in_first_partial', { at: heard.firstAt });
+    turn.bargeIn.first_words = heard.words;
   }
 
   private softPause(turn: ActiveTurn, text: string): void {
