@@ -27,12 +27,26 @@ export interface TurnSummary {
   assistant_chars_heard?: number;
   heard_text_estimated?: boolean;
   false_interruptions: number;
+  /** What the caller's side did while Mujeeb was speaking. Present only when something was heard. */
+  barge_in?: BargeInStats;
   /** Tool-using turns: model rounds, and each tool call's name, outcome status and duration. */
   llm_rounds?: number;
   tool_calls?: { name: string; outcome: string; ms: number }[];
   error?: { error_name: string; error_kind?: string; provider?: string; message: string };
   user_text?: string;
   assistant_text?: string;
+}
+
+/** Counts only, never text: how often local VAD and STT heard the caller while Mujeeb spoke, and what the policy did. */
+export interface BargeInStats {
+  vad_starts: number;
+  /** Non-empty transcripts (partial or committed) evaluated by the barge-in policy. */
+  transcripts: number;
+  ignored: { echo: number; backchannel: number; empty: number };
+  /** Soft pauses (one-word candidates). */
+  candidates: number;
+  /** Interrupted turns: words in the first transcript of the interrupting speech. */
+  first_words?: number;
 }
 
 export interface TurnSummarySink {

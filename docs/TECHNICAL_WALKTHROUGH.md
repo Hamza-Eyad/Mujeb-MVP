@@ -919,7 +919,12 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 
 ساعة `performance.now()` (monotonic). `mark(name)` يسجل **أول مرة فقط** (إلا مع `overwrite`). العلامات:
 
-`user_speech_start, user_speech_end, stt_first_partial, stt_committed, llm_request, llm_first_token, llm_done, tts_first_text, tts_first_audio, playback_start, playback_end, barge_in_speech_start, barge_in_candidate, interrupt_requested, playback_stopped, error`
+`user_speech_start, user_speech_end, stt_first_partial, stt_committed, llm_request, llm_first_token, llm_done, tts_first_text, tts_first_audio, playback_start, playback_end, barge_in_speech_start, barge_in_segment_start, barge_in_segment_end, barge_in_first_partial, barge_in_candidate, interrupt_requested, playback_stopped, error`
+
+علامات الكلام الذي قاطع (تُسجَّل في الدور المقاطَع فقط، عند القرار، بأوقاتها الفعلية):
+- `barge_in_first_partial`: أول نص **فيه كلمات** من هذا الكلام. الكلام يبدأ بعد آخر نص نهائي، فالصدى الذي اكتمل نصه قبله لا يُحسب.
+- `barge_in_segment_start`: بداية آخر مقطع VAD بدأ بعد بداية الدور، لحظة وصول ذلك النص. لا تُسجَّل إن لم يبدأ مقطع جديد.
+- `barge_in_segment_end`: نهاية ذلك المقطع، إن كان قد انتهى قبل وصول النص.
 
 المدد المحسوبة (`durations()`):
 
@@ -932,7 +937,11 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 | `first_audio_after_commit_ms` | `stt_committed → tts_first_audio` |
 | `playback_buffer_ms` | `tts_first_audio → playback_start` |
 | **`e2e_ms`** | **`user_speech_end → playback_start`** (الإحساس الكلي عند المتصل) |
-| `barge_in_reaction_ms` | `barge_in_speech_start → interrupt_requested` |
+| `barge_in_reaction_ms` | `barge_in_speech_start → interrupt_requested` (من أول إطلاق VAD أثناء كلام مُجيب، وقد يكون صدى أو ضجيجًا) |
+| `barge_in_reaction_segment_ms` | `barge_in_segment_start → interrupt_requested` = `barge_in_stt_ms` + `barge_in_policy_ms` |
+| `barge_in_stt_ms` | `barge_in_segment_start → barge_in_first_partial` |
+| `barge_in_policy_ms` | `barge_in_first_partial → interrupt_requested` (انتظار كلمة ثانية أو نص نهائي) |
+| `barge_in_segment_gap_ms` | `barge_in_segment_end → barge_in_first_partial`. ثوانٍ هنا تعني أن النص ربما جاء من كلام لم يلتقطه الـVAD، فيكون `barge_in_stt_ms` أطول من الحقيقي |
 | `interrupt_stop_ms` | `interrupt_requested → playback_stopped` |
 | `tools_ms` | مجموع أزمنة الأدوات (تضيفها الجلسة) |
 
@@ -940,6 +949,7 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 
 - `JsonlTurnSink`: سطر JSON لكل دور في `logs/turns-YYYY-MM-DD.jsonl`.
 - `latencyPercentiles()` + `npm run report`: p50/p90/p95/max لكل مدة (nearest-rank).
+- `barge_in` في ملخص الدور (أعداد فقط، بلا نصوص، وموجود فقط إن سُمع شيء أثناء كلام مُجيب): إطلاقات الـVAD، والنصوص، والمتجاهَلة حسب السبب (صدى، إقرار، فارغ)، والإيقافات المؤقتة، وعدد كلمات أول نص في الدور المقاطَع. `npm run report` يجمعها لكل قناة.
 - **الـlogger** (`observability/logger.ts`): JSON lines، مستويات debug/info/warn/error، `child()` لإضافة سياق (`session_id`, `tenant_id`, `turn_id`)، و`sanitize` يخفي أي مفتاح اسمه يطابق `api[_-]?key|token|secret|authorization|password|xi-api-key` (ولهذا سُمّي مفتاح الميزانية `output_budget` لا `max_output_tokens`).
 - أحداث `tool.call`, `tool.audit`, `write.*`, `scheduling.request`, `patient.verification` تحمل correlation IDs بدون بيانات مرضى.
 

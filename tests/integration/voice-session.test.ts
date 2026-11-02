@@ -52,6 +52,7 @@ describe('VoiceSession — happy path', () => {
     expect(done).toBeGreaterThanOrEqual(firstAudio);
     // No transcript text in metrics by default (privacy).
     expect(summary).not.toHaveProperty('user_text');
+    expect(summary).not.toHaveProperty('barge_in'); // nothing was heard while Mujeeb spoke
   });
 
   it('starts LLM→TTS streaming before the LLM finishes (first audio precedes llm_done)', async () => {
@@ -179,6 +180,128 @@ describe('VoiceSession — barge-in', () => {
     expect(h.transport.count('clear')).toBe(1);
     await waitFor(() => summaries(h).length === 1);
     expect(summaries(h)[0]).toMatchObject({ outcome: 'interrupted' });
+  });
+
+  it('measures an interruption in parts: VAD segment → first transcript → decision', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.transport.feed(frames(true, 10)); // the caller talks: VAD starts the segment 100ms back
+    await delay(120); // STT is slower than VAD
+    h.sttStream.partial('لا'); // one word: pause and wait for more
+    await delay(80);
+    h.sttStream.partial('لا انتظر');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    const m = summary?.marks_ms ?? {};
+    const d = summary?.durations_ms ?? {};
+    expect(m.barge_in_segment_start).toBe(m.barge_in_speech_start); // one segment: both starts agree
+    expect(Math.abs((m.barge_in_candidate ?? 0) - (m.barge_in_first_partial ?? -1))).toBeLessThan(20); // it paused playback, not the second word
+    expect(d.barge_in_stt_ms).toBeGreaterThanOrEqual(200);
+    expect(d.barge_in_policy_ms).toBeGreaterThanOrEqual(70); // waited for the second word
+    // Each duration is rounded to 0.1ms, so the parts may differ from the total by one step.
+    expect(Math.abs((d.barge_in_stt_ms ?? 0) + (d.barge_in_policy_ms ?? 0) - (d.barge_in_reaction_segment_ms ?? -1))).toBeLessThan(0.15);
+    expect(d.barge_in_reaction_ms).toBe(d.barge_in_reaction_segment_ms);
+    expect(m).not.toHaveProperty('barge_in_segment_end'); // still talking when the transcript came
+    expect(summary?.barge_in).toEqual({ vad_starts: 1, transcripts: 2, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 1, first_words: 1 });
+    expect(JSON.stringify(summary)).not.toContain('انتظر'); // counts only, no text
+  });
+
+  it('measures from the VAD segment of the interrupting speech, not from an earlier burst of noise', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.transport.feed([...frames(true, 10), ...frames(false, 20)]); // noise or echo: a VAD segment, no transcript
+    await delay(150);
+    h.transport.feed(frames(true, 10)); // the caller speaks: a new segment
+    await delay(50);
+    h.sttStream.partial('لحظة لو سمحت');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    const m = summary?.marks_ms ?? {};
+    const d = summary?.durations_ms ?? {};
+    expect(m.barge_in_segment_start).toBeGreaterThan((m.barge_in_speech_start ?? 0) + 140);
+    expect(d.barge_in_reaction_ms).toBeGreaterThan((d.barge_in_reaction_segment_ms ?? 0) + 140); // the old measure is inflated
+    expect(d.barge_in_policy_ms).toBeLessThan(20); // three words: decided on the first transcript
+    expect(summary?.barge_in).toMatchObject({ vad_starts: 2, transcripts: 1, candidates: 0, first_words: 3 });
+  });
+
+  it('records how long before the first transcript the VAD segment had ended', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.transport.feed(frames(true, 10)); // segment starts 100ms back
+    await delay(250);
+    h.transport.feed(frames(false, 15)); // and ends 300ms back: 50ms after it started
+    await delay(100); // the transcript comes after the caller stopped
+    h.sttStream.partial('لا لحظة');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    const m = summary?.marks_ms ?? {};
+    const d = summary?.durations_ms ?? {};
+    expect(m.barge_in_segment_end).toBeGreaterThan(m.barge_in_segment_start ?? Infinity);
+    expect(d.barge_in_segment_gap_ms).toBeGreaterThanOrEqual(330);
+    expect(d.barge_in_segment_gap_ms).toBeLessThan(d.barge_in_stt_ms ?? 0);
+  });
+
+  it('starts the heard speech at the first transcript with words', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.sttStream.partial('...'); // no words yet
+    await delay(60);
+    h.sttStream.partial('لا لحظة');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    expect(summary?.durations_ms.barge_in_policy_ms).toBeLessThan(20); // the 60ms wait for words is not policy time
+    expect(summary?.barge_in).toMatchObject({ transcripts: 2, ignored: { echo: 0, backchannel: 0, empty: 1 }, first_words: 2 });
+  });
+
+  it('starts a new heard utterance after a committed echo', async () => {
+    const reply = 'عيادتنا تفتح من الساعة ثمانية الصباح إلى الساعة عشرة المساء طوال أيام الأسبوع ما عدا الجمعة.';
+    const h = track(createHarness({ llm: { reply: () => reply, tokenDelayMs: 20 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('متى الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.sttStream.partial('تفتح من الساعة ثمانية');
+    h.sttStream.commit('تفتح من الساعة ثمانية'); // echo, ignored: this STT utterance is over
+    await delay(60);
+    h.sttStream.partial('لا لحظة');
+    await waitFor(() => summaries(h).length === 1, 2000, 'interrupted summary');
+
+    const [summary] = summaries(h);
+    expect(summary?.durations_ms.barge_in_policy_ms).toBeLessThan(20); // measured from 'لا لحظة', not from the echo 60ms earlier
+    expect(summary?.barge_in).toMatchObject({ transcripts: 3, ignored: { echo: 2, backchannel: 0, empty: 0 }, first_words: 2 });
+  });
+
+  it('counts what it heard while speaking when nobody interrupts, without new marks', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    h.transport.feed([...frames(true, 10), ...frames(false, 20)]);
+    h.sttStream.partial('اها');
+    await waitFor(() => summaries(h).length === 1, 8000);
+
+    const [summary] = summaries(h);
+    expect(summary?.outcome).toBe('completed');
+    expect(summary?.barge_in).toEqual({ vad_starts: 1, transcripts: 1, ignored: { echo: 0, backchannel: 1, empty: 0 }, candidates: 0 });
+    expect(summary?.marks_ms).not.toHaveProperty('barge_in_first_partial');
+    expect(summary?.marks_ms).not.toHaveProperty('barge_in_segment_start');
   });
 
   it('ignores backchannels and echoes of its own speech', async () => {
