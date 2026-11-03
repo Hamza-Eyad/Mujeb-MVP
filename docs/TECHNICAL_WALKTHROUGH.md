@@ -315,7 +315,7 @@ LlmEvent = {type:'text_delta', text} | {type:'completed', toolCalls?, continuati
 ### 5.2 داخل `onAudio`
 
 1. `counters.framesIn++`.
-2. إذا الترميز `pcm16`: يمر الإطار على `EnergyVad` (قسم 6.4) لقياس بداية ونهاية كلام المتصل (للقياس فقط).
+2. إذا الترميز `pcm16`: يمر الإطار على `EnergyVad` (قسم 6.4) لقياس بداية ونهاية كلام المتصل (للقياس فقط). ومستوى الإطار (dBFS) يُعد في `LevelHistogram` (قسم 13.2): للدور الذي يُشغَّل رده، أو لوقت السكوت قبل الرد التالي. أرقام فقط، بلا صوت.
 3. **وضع half-duplex:** إذا `duplexMode === 'half'` وكانت الحالة `speaking` أو داخل "ذيل الصدى" (`withinEchoTail`)، يُرسل للـSTT **صمت** (بايتات أصفار بنفس الطول) بدل صوت المايك. الهدف إبقاء التوقيت وعدم التقاط صوت مُجيب نفسه.
 4. `bufferForStt`: يجمع الإطارات في مخزن إلى أن يبلغ `sttChunkMs` (الافتراضي 100ms = 3,200 بايت) ثم يرسلها دفعة واحدة لـ`sttStream.sendAudio`. إذا ما فيه stream مفتوح (إعادة اتصال) يُعد الإطار `framesDroppedNoStt`.
 
@@ -413,7 +413,9 @@ SessionState = 'starting' | 'listening' | 'thinking' | 'speaking' | 'closed'
 كاشف طاقة (RMS بالديسيبل) بحد أدنى متكيف مع الضجيج:
 
 - `thresholdDb: -48`، `noiseMarginDb: 10`، `minSpeechMs: 100`، `hangoverMs: 300`.
-- يرسل `speech_start` و`speech_end` مع "قبل كم ms حصل".
+- يرسل `speech_start` و`speech_end` مع "قبل كم ms حصل". الأزمنة بزمن الصوت (عدد الإطارات)، لا بساعة الجهاز.
+- `speech_start.onsetMsAgo`: أول إطار في نفس الارتفاع فوق مستوى الضجيج بـ6 dB. الفرق بينه وبين `startedMsAgo` هو الجزء الهادئ من بداية الصوت الذي قطعه الـthreshold.
+- `speech_end.lastedMs`: طول المقطع، من أول إطار فوق الـthreshold إلى آخر إطار. و`speechMs` نفس الشيء لمقطع لم ينتهِ بعد.
 - **لا يقرر الأدوار.** الأدوار يحددها STT. الـVAD المحلي للقياس فقط: `user_speech_start/end` (لحساب `e2e_ms`) و`barge_in_speech_start`. وفي حالة المقاطعة المؤقتة يُستخدم `vad.isSpeaking` لتمديد الانتظار (6.6).
 
 ### 6.5 الأحداث الصادرة (`SessionEvent`)
@@ -951,6 +953,12 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 - `JsonlTurnSink`: سطر JSON لكل دور في `logs/turns-YYYY-MM-DD.jsonl`.
 - `latencyPercentiles()` + `npm run report`: p50/p90/p95/max لكل مدة (nearest-rank).
 - `barge_in` في ملخص الدور (أعداد فقط، بلا نصوص، وموجود فقط إن سُمع شيء أثناء كلام مُجيب): إطلاقات الـVAD، والنصوص، والمتجاهَلة حسب السبب (صدى، إقرار، فارغ)، والإيقافات المؤقتة، وعدد كلمات أول نص في الدور المقاطَع. `npm run report` يجمعها لكل قناة.
+  - `vad_segments`: مقطع لكل إطلاق VAD أثناء كلام مُجيب. فيه طوله (`ms`)، والجزء الهادئ من بدايته الذي قطعه الـthreshold (`lead_ms`). وإن بقي المقطع مستمرًا عند نهاية الدور، يُقاس طوله إلى تلك اللحظة ويُعلَّم `open`.
+- `line` في ملخص الدور: مستوى صوت الخط الداخل (dBFS)، أرقام فقط بلا صوت:
+  - `playing`: أثناء تشغيل رد هذا الدور. يعني الصدى وضجيج الخط، ومعها صوت المتصل لو تكلم فوق الرد. الإيقاف المؤقت ما يُحسب هنا.
+  - `quiet`: وقت سكوت مُجيب، من بداية الرد السابق إلى بداية هذا الرد. يعني كلام المتصل وضجيج الخط.
+  - كل واحد منهما: p10 وp50 وp90 (الحد الأدنى لخانة 1 dB) وmax. ومعهما `noise_floor_db` و`threshold_db` حق الـVAD عند نهاية الدور.
+  - `npm run report` يعرض لكل قناة: وسيط هذه الأرقام عبر الأدوار، ومقاطع الـVAD حسب طولها (أدوار اكتملت، وأدوار قوطعت)، وتوزيع `lead_ms`.
 - **الـlogger** (`observability/logger.ts`): JSON lines، مستويات debug/info/warn/error، `child()` لإضافة سياق (`session_id`, `tenant_id`, `turn_id`)، و`sanitize` يخفي أي مفتاح اسمه يطابق `api[_-]?key|token|secret|authorization|password|xi-api-key` (ولهذا سُمّي مفتاح الميزانية `output_budget` لا `max_output_tokens`).
 - أحداث `tool.call`, `tool.audit`, `write.*`, `scheduling.request`, `patient.verification` تحمل correlation IDs بدون بيانات مرضى.
 

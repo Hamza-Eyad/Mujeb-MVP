@@ -190,6 +190,50 @@ describe('latency report', () => {
     expect(text).toContain('first words of interrupting speech: 1×1, 3+×1');
     expect(text).toContain('barge_in_policy_ms');
   });
+
+  it('reports the line level and the VAD segments heard over Mujeeb, per channel', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mujeeb-report-'));
+    const heard = (vad_segments: object[]) => ({ vad_starts: vad_segments.length, transcripts: 0, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 0, vad_segments });
+    const level = (p50: number, max: number) => ({ frames: 100, p10_db: p50 - 20, p50_db: p50, p90_db: p50 + 10, max_db: max });
+    const lines = [
+      {
+        channel: 'phone',
+        outcome: 'completed',
+        false_interruptions: 0,
+        durations_ms: {},
+        barge_in: heard([{ ms: 120, lead_ms: 0 }, { ms: 450, lead_ms: 40 }]),
+        line: { playing: level(-60, -30.5), quiet: level(-50, -12), noise_floor_db: -70, threshold_db: -48 },
+      },
+      {
+        channel: 'phone',
+        outcome: 'interrupted',
+        false_interruptions: 0,
+        durations_ms: {},
+        barge_in: heard([{ ms: 1500, lead_ms: 80, open: true }]),
+        line: { playing: level(-56, -20), noise_floor_db: -62, threshold_db: -52 },
+      },
+      { channel: 'phone', outcome: 'completed', false_interruptions: 0, durations_ms: {}, line: { playing: level(-58, -40), noise_floor_db: -60, threshold_db: -50 } },
+      { channel: 'browser', outcome: 'completed', false_interruptions: 0, durations_ms: { e2e_ms: 900 } }, // logged before the field existed
+    ];
+    writeFileSync(join(dir, 'turns-2026-11-03.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+    const report = await buildLatencyReport(dir);
+    expect(report.byChannel['phone']?.line).toEqual({
+      playing: { turns: 3, p10_db: -78, p50_db: -58, p90_db: -48, max_db: -20 },
+      quiet: { turns: 1, p10_db: -70, p50_db: -50, p90_db: -40, max_db: -12 },
+      thresholdDb: -50,
+      segments: {
+        completed: { '<300': 1, '300-600': 1, '600-1000': 0, '1000+': 0 },
+        interrupted: { '<300': 0, '300-600': 0, '600-1000': 0, '1000+': 1 },
+      },
+      leadMs: { count: 3, p50: 40, p90: 80, max: 80 },
+    });
+    const empty = { '<300': 0, '300-600': 0, '600-1000': 0, '1000+': 0 };
+    expect(report.byChannel['browser']?.line).toEqual({ segments: { completed: empty, interrupted: empty } });
+    const text = formatLatencyReport(report);
+    expect(text).toContain('line level while Mujeeb played (dBFS, median of 3 turns): p10 -78  p50 -58  p90 -48  max -20');
+    expect(text).toContain('VAD segments while Mujeeb played, not interrupted: <300ms 1 · 300-600ms 1 · 600-1000ms 0 · 1000+ms 0');
+    expect(text).toContain('VAD onset lead: n 3  p50 40  p90 80  max 80 ms');
+  });
 });
 
 describe('render-prompt (fixed telephony prompts, rendered once)', () => {

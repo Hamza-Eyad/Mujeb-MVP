@@ -73,6 +73,7 @@ npm.cmd run telephony:fake   # مزودون وهميون، بدون مفاتيح
 أوامر مفيدة في الكونسول:
 - `pjsip show endpoints`: هل MicroSIP مسجّل.
 - `dialplan show lab`: الـdialplan الحالي.
+- `core show channels` ثم `core show channel <الاسم>`: الكودك المستخدم في المكالمة (سطر `NativeFormats` في قناة `PJSIP/6001-…`).
 - `core reload`: بعد إعادة `setup-lab.sh`.
 - `core stop now`: إيقاف Asterisk.
 
