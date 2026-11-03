@@ -1,5 +1,6 @@
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
+import type { LevelStats } from './level-histogram.js';
 import type { TurnDurations, TurnMark } from './turn-timeline.js';
 import { DURATION_KEYS } from './turn-timeline.js';
 
@@ -29,6 +30,8 @@ export interface TurnSummary {
   false_interruptions: number;
   /** What the caller's side did while Mujeeb was speaking. Present only when something was heard. */
   barge_in?: BargeInStats;
+  /** The incoming line's level around this turn. Absent in logs written before 2026-11-03. */
+  line?: LineLevel;
   /** Tool-using turns: model rounds, and each tool call's name, outcome status and duration. */
   llm_rounds?: number;
   tool_calls?: { name: string; outcome: string; ms: number }[];
@@ -47,6 +50,29 @@ export interface BargeInStats {
   candidates: number;
   /** Interrupted turns: words in the first transcript of the interrupting speech. */
   first_words?: number;
+  /** One per VAD start while Mujeeb spoke, in order. Absent in logs written before 2026-11-03. */
+  vad_segments?: VadSegment[];
+}
+
+export interface VadSegment {
+  /** Audio time the VAD heard speech; when it still did at the turn's end, up to then (`open`). */
+  ms: number;
+  open?: true;
+  /** Audio time the sound had been rising above the noise floor before it crossed the speech threshold. */
+  lead_ms: number;
+}
+
+/**
+ * Levels of the incoming audio's frames (dBFS; numbers only, never audio).
+ * - `playing`: while this turn's reply played: echo and line noise, and the caller when they spoke over it.
+ * - `quiet`: while Mujeeb played nothing (soft pauses too), since the previous reply began: the caller's speech and the line's noise.
+ */
+export interface LineLevel {
+  playing?: LevelStats;
+  quiet?: LevelStats;
+  /** The VAD's noise floor and speech threshold when the turn ended. */
+  noise_floor_db: number;
+  threshold_db: number;
 }
 
 export interface TurnSummarySink {
@@ -125,7 +151,8 @@ export function latencyPercentiles(summaries: readonly Pick<TurnSummary, 'durati
   return rows;
 }
 
-function percentile(sorted: readonly number[], p: number): number {
+/** Nearest rank: `p` in percent, `sorted` ascending. */
+export function percentile(sorted: readonly number[], p: number): number {
   const rank = Math.max(1, Math.ceil((p / 100) * sorted.length));
   return sorted[rank - 1] ?? 0;
 }

@@ -4,7 +4,7 @@ import { FakeTextToSpeech } from '../../src/adapters/fakes/fake-tts.js';
 import { ProviderError } from '../../src/core/errors.js';
 import type { VoiceSession } from '../../src/voice/session.js';
 import { FakeTransport } from '../support/fake-transport.js';
-import { createHarness, delay, frames, waitFor } from '../support/session-harness.js';
+import { createHarness, delay, frames, toneFrames, waitFor } from '../support/session-harness.js';
 
 const open: VoiceSession[] = [];
 function track<T extends { session: VoiceSession }>(h: T): T {
@@ -206,7 +206,14 @@ describe('VoiceSession — barge-in', () => {
     expect(Math.abs((d.barge_in_stt_ms ?? 0) + (d.barge_in_policy_ms ?? 0) - (d.barge_in_reaction_segment_ms ?? -1))).toBeLessThan(0.15);
     expect(d.barge_in_reaction_ms).toBe(d.barge_in_reaction_segment_ms);
     expect(m).not.toHaveProperty('barge_in_segment_end'); // still talking when the transcript came
-    expect(summary?.barge_in).toEqual({ vad_starts: 1, transcripts: 2, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 1, first_words: 1 });
+    expect(summary?.barge_in).toEqual({
+      vad_starts: 1,
+      transcripts: 2,
+      ignored: { echo: 0, backchannel: 0, empty: 0 },
+      candidates: 1,
+      first_words: 1,
+      vad_segments: [{ ms: 200, lead_ms: 0, open: true }], // still talking when the turn ended
+    });
     expect(JSON.stringify(summary)).not.toContain('انتظر'); // counts only, no text
   });
 
@@ -299,9 +306,51 @@ describe('VoiceSession — barge-in', () => {
 
     const [summary] = summaries(h);
     expect(summary?.outcome).toBe('completed');
-    expect(summary?.barge_in).toEqual({ vad_starts: 1, transcripts: 1, ignored: { echo: 0, backchannel: 1, empty: 0 }, candidates: 0 });
+    expect(summary?.barge_in).toEqual({ vad_starts: 1, transcripts: 1, ignored: { echo: 0, backchannel: 1, empty: 0 }, candidates: 0, vad_segments: [{ ms: 200, lead_ms: 0 }] });
     expect(summary?.marks_ms).not.toHaveProperty('barge_in_first_partial');
     expect(summary?.marks_ms).not.toHaveProperty('barge_in_segment_start');
+  });
+
+  it('measures the line level while Mujeeb plays and while it is quiet, numbers only', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.transport.feed([...frames(false, 10), ...frames(true, 10), ...frames(false, 20)]); // the caller asks
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+
+    // Over the reply: a quiet onset the threshold cuts off, then speech that stops.
+    h.transport.feed([...toneFrames(60, 10), ...frames(true, 10), ...frames(false, 20)]);
+    await waitFor(() => summaries(h).length === 1, 8000);
+
+    const [summary] = summaries(h);
+    expect(summary?.outcome).toBe('completed');
+    expect(summary?.barge_in?.vad_segments).toEqual([{ ms: 200, lead_ms: 200 }]);
+    expect(summary?.line).toEqual({
+      quiet: { frames: 40, p10_db: -100, p50_db: -100, p90_db: -16, max_db: -15.2 }, // silence and the caller's question
+      playing: { frames: 40, p10_db: -100, p50_db: -100, p90_db: -16, max_db: -15.2 },
+      noise_floor_db: -90,
+      threshold_db: -48,
+    });
+  });
+
+  it('starts the quiet time again after each reply, and leaves a soft pause out of the playing level', async () => {
+    const h = track(createHarness({ llm: { tokenDelayMs: 30 }, tts: { realtimeFactor: 0.3 } }));
+    await h.session.start();
+    h.transport.feed(frames(false, 5));
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'speaking', 3000);
+    h.transport.feed(frames(false, 3));
+    h.sttStream.partial('لحظة'); // one word: soft pause
+    await waitFor(() => h.events.some((e) => e.type === 'barge_in' && e.action === 'pause'), 2000);
+    h.transport.feed(frames(false, 4)); // heard during the pause: nothing plays
+    await waitFor(() => summaries(h).length === 1, 8000);
+    h.transport.feed(frames(false, 2));
+    h.sttStream.commit('طيب');
+    await waitFor(() => summaries(h).length === 2, 8000);
+
+    const [first, second] = summaries(h);
+    expect(first?.line).toMatchObject({ quiet: { frames: 5 }, playing: { frames: 3 } });
+    expect(second?.line).toMatchObject({ quiet: { frames: 6 } }); // the pause and the time after the first reply
   });
 
   it('ignores backchannels and echoes of its own speech', async () => {
