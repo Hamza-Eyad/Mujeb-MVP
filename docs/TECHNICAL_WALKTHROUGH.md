@@ -91,6 +91,7 @@
 | `npm run check` | `typecheck` + `lint` + `vitest run` (بدون أي API مدفوع) |
 | `npm run test:live` | اختبارات مع مزودين حقيقيين (معطلة افتراضيًا) |
 | `npm run report` | يحسب p50/p90/p95 من `logs/turns-*.jsonl` |
+| `npm run bench:barge-in` | الـbench الخاص بالمقاطعة بساعة افتراضية: يطبع (أ) VAD و(ب) STT و(ج) القرار لكل سيناريو (`tests/support/barge-in-bench.ts`) |
 | `npm run probe:elevenlabs` | يفتح جلسات حقيقية ويقرأ ما طبّقه الخادم فعلًا من الإعدادات |
 | `npm run seed:medplum` | يعبّي Medplum ببيانات اصطناعية (dry-run افتراضيًا، `--apply` للكتابة) |
 
