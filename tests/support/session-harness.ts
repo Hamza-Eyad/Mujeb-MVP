@@ -41,6 +41,8 @@ export interface HarnessOptions {
   /** Enables the tool-using path. */
   tools?: AgentToolbox;
   agent?: { maxToolRounds?: number; toolMutationGraceMs?: number; toolDrainTimeoutMs?: number; toolWaitPhrase?: string };
+  /** The session's clock (default performance.now). With fake timers, pass `() => Date.now()`. */
+  now?: () => number;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -63,6 +65,7 @@ export function createHarness(options: HarnessOptions = {}) {
     metrics: sink,
     observer: (event) => events.push(event),
     ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.now ? { now: options.now } : {}),
   });
   return {
     session,
