@@ -84,6 +84,9 @@ restart_and_watch() {
   local since port pid i journal
   since="$(date '+%Y-%m-%d %H:%M:%S')"
   port="$(gateway_port)"
+  # A release that crash-loops hits StartLimitBurst (5 in 60 s) within the watch, and systemd then refuses every start,
+  # the rollback's included: clear the failed state and the start-limit counter first.
+  systemctl reset-failed "$SERVICE" 2>/dev/null || true
   systemctl restart "$SERVICE" || { say "watch: restart failed"; return 1; }
   for i in $(seq 1 20); do
     if ss -Hltn "( sport = :$port )" | has "127\.0\.0\.1:$port"; then break; fi
