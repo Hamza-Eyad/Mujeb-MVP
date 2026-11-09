@@ -111,7 +111,7 @@ while IFS='|' read -r name type ctx dm; do
 done < <(pjsip_sections)
 [ "$transports" -ge 1 ] || bad "pjsip.conf: no transport"
 for key in external_media_address external_signaling_address local_net; do
-  lines pjsip.conf | has -E "^$key[[:space:]]*=[[:space:]]*[0-9]" || bad "pjsip.conf: transports need $key (NAT on OCI)"
+  lines pjsip.conf | has -E "^${key}[[:space:]]*=[[:space:]]*[0-9]" || bad "pjsip.conf: transports need $key (NAT on OCI)"
 done
 
 # ── rtp.conf, websocket_client.conf ──────────────────────────────────────

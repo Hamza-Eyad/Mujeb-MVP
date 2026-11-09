@@ -38,5 +38,8 @@ ldconfig
 
 echo "== result"
 /usr/sbin/asterisk -V
-ls /usr/lib/asterisk/modules/ | grep -E '^(chan_websocket|res_websocket_client|chan_pjsip|codec_g722|res_http_websocket)\.so$'
+for module in chan_websocket res_websocket_client chan_pjsip codec_g722 res_http_websocket; do
+  [ -e "/usr/lib/asterisk/modules/$module.so" ] || { echo "missing module: $module.so"; exit 1; }
+  echo "$module.so"
+done
 echo "BUILD_OK"

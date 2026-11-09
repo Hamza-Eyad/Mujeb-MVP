@@ -7,6 +7,7 @@ RELEASES="$MUJEEB_HOME/releases"
 CURRENT="$MUJEEB_HOME/current"
 PREVIOUS="$MUJEEB_HOME/previous"
 MUJEEB_ENV=/etc/mujeeb/mujeeb.env
+# shellcheck disable=SC2034 # used by the scripts that source this file (bootstrap-host.sh, deploy-mujeeb.sh)
 DEPLOY_ENV=/etc/mujeeb/deploy.env
 SERVICE=mujeeb-telephony
 LOCK_FILE=/run/lock/mujeeb-deploy.lock
