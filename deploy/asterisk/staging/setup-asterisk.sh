@@ -403,6 +403,9 @@ exten => _talk-X.,1,Set(TALK_SECONDS=${CUT(EXTEN,-,2)})
 EOF
 } | sed "s/@DIAL_TIMEOUT@/$DIAL_TIMEOUT/" > "$OUT/extensions.conf"
 
+# The modes they are installed with (pjsip.conf and websocket_client.conf hold secrets): the check below refuses
+# world-readable files, and the generated ones follow the caller's umask (022 on a fresh server).
+chmod 640 "$OUT"/*.conf
 bash "$HERE/check-asterisk-config.sh" "$OUT" >/dev/null || {
   bash "$HERE/check-asterisk-config.sh" "$OUT" || true
   die "the generated configuration failed its checks: nothing was installed"
