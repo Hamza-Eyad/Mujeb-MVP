@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeArabic, tokenize } from '../../src/voice/arabic-text.js';
 import { DEFAULT_BARGE_IN_POLICY, evaluateBargeIn, isEchoOf } from '../../src/voice/barge-in-policy.js';
-import { EnergyVad, rmsDb } from '../../src/voice/energy-vad.js';
+import { EnergyVad, type VadEvent, rmsDb } from '../../src/voice/energy-vad.js';
 import { chunkText } from '../../src/voice/text-chunker.js';
 
 async function* fromArray(items: string[]): AsyncGenerator<string> {
@@ -109,6 +109,21 @@ describe('EnergyVad', () => {
     feed(8000, 20, 'speech');
     feed(0, 20, 'silence');
     expect(events).toEqual(['speech:speech_start@4:100', 'silence:speech_end@14:300']);
+  });
+
+  it('reports how much of a quiet onset the threshold cut off, and how long the speech lasted, in audio time', () => {
+    const vad = new EnergyVad();
+    const run = (amplitude: number, frames: number): VadEvent[] =>
+      Array.from({ length: frames }, () => vad.process(frame(amplitude), RATE)).filter((e): e is VadEvent => e !== null);
+    run(0, 10); // digital silence: the noise floor drops to its lowest
+    expect(run(60, 10)).toEqual([]); // ≈ -58 dBFS: above the floor, below the -48 dBFS threshold
+    expect(vad.threshold).toBe(-48);
+    expect(run(8000, 10)).toEqual([{ type: 'speech_start', startedMsAgo: 100, onsetMsAgo: 300 }]); // 200ms cut off
+    expect(vad.speechMs).toBe(200);
+    run(8000, 10);
+    expect(run(0, 20)).toEqual([{ type: 'speech_end', endedMsAgo: 300, lastedMs: 400 }]);
+    expect(vad.speechMs).toBe(0);
+    expect(vad.noiseFloor).toBe(-90);
   });
 
   it('ignores short clicks and low background noise', () => {

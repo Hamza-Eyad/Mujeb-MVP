@@ -6,7 +6,8 @@ import { CancelledError, ProviderError, errorSummary } from '../core/errors.js';
 import { newTurnId } from '../core/ids.js';
 import type { Logger } from '../core/logger.js';
 import type { TenantContext } from '../core/tenant.js';
-import type { BargeInStats, TurnOutcome, TurnSummary, TurnSummarySink } from '../observability/turn-metrics.js';
+import { LevelHistogram } from '../observability/level-histogram.js';
+import type { BargeInStats, LineLevel, TurnOutcome, TurnSummary, TurnSummarySink, VadSegment } from '../observability/turn-metrics.js';
 import { type TurnMark, TurnTimeline } from '../observability/turn-timeline.js';
 import type { AudioTransport, TransportEvent } from '../ports/audio-transport.js';
 import type { LanguageModel } from '../ports/language-model.js';
@@ -156,8 +157,11 @@ interface ActiveTurn {
   dismissedTranscript?: string;
   falseInterruptTimer?: NodeJS.Timeout;
   falseInterruptions: number;
-  readonly bargeIn: BargeInStats;
+  readonly bargeIn: BargeInStats & { vad_segments: VadSegment[] };
   heard?: HeardUtterance;
+  /** Incoming frame levels while this turn's audio played, and while nothing played before it. */
+  readonly playingLevels: LevelHistogram;
+  quietLevels?: LevelHistogram;
   reason?: string;
   finalized: boolean;
 }
@@ -193,6 +197,10 @@ export class VoiceSession {
   private lastPlaybackEndAt = Number.NEGATIVE_INFINITY;
   private lastVadStartAt = Number.NEGATIVE_INFINITY;
   private lastVadEndAt = Number.NEGATIVE_INFINITY;
+  /** The VAD segment that began while a turn played, until it ends or that turn does. */
+  private vadSegment: { turn: ActiveTurn; segment: VadSegment } | undefined;
+  /** Frame levels while nothing played, handed to the next turn whose audio starts. */
+  private quietLevels = new LevelHistogram();
   private lastRttMs: number | undefined;
   private sttBuffer: Uint8Array[] = [];
   private sttBufferedBytes = 0;
@@ -315,7 +323,9 @@ export class VoiceSession {
     this.counters.framesIn += 1;
     const format = this.deps.transport.inputFormat;
     if (format.encoding === 'pcm_s16le') {
-      const vadEvent = this.vad.process(pcm16Samples(data), format.sampleRate);
+      const samples = pcm16Samples(data);
+      const vadEvent = this.vad.process(samples, format.sampleRate);
+      if (samples.length > 0) this.noteLevel(this.vad.levelDb);
       if (vadEvent?.type === 'speech_start') {
         const at = this.now() - vadEvent.startedMsAgo;
         this.lastVadStartAt = at;
@@ -323,11 +333,13 @@ export class VoiceSession {
         if (speaking) {
           speaking.timeline.mark('barge_in_speech_start', { at });
           speaking.bargeIn.vad_starts += 1;
+          this.openVadSegment(speaking, vadEvent.onsetMsAgo - vadEvent.startedMsAgo);
         }
         this.ensurePending().mark('user_speech_start', { at });
       } else if (vadEvent?.type === 'speech_end') {
         const at = this.now() - vadEvent.endedMsAgo;
         this.lastVadEndAt = at;
+        this.closeVadSegment(vadEvent.lastedMs, false);
         const turn = this.current;
         if (!this.pendingTimeline && turn?.kind === 'user' && !turn.timeline.has('user_speech_end')) {
           turn.timeline.mark('user_speech_end', { at }); // VAD settled after a fast commit
@@ -338,6 +350,27 @@ export class VoiceSession {
     }
     const gate = this.cfg.duplexMode === 'half' && (this.state === 'speaking' || this.withinEchoTail());
     this.bufferForStt(gate ? new Uint8Array(data.byteLength) : data); // half-duplex: keep timing, send silence
+  }
+
+  /** Numbers only, never audio: the frame's level goes to the turn whose reply is playing, or to the quiet time before the next one. */
+  private noteLevel(db: number): void {
+    const playing = this.state === 'speaking' && this.current && !this.current.paused ? this.current : null;
+    (playing ? playing.playingLevels : this.quietLevels).add(db);
+  }
+
+  private openVadSegment(turn: ActiveTurn, leadMs: number): void {
+    const segment: VadSegment = { ms: 0, lead_ms: roundMs(leadMs) };
+    turn.bargeIn.vad_segments.push(segment);
+    this.vadSegment = { turn, segment };
+  }
+
+  /** `open`: the turn ended while the VAD still heard speech, so the length is cut there. */
+  private closeVadSegment(lastedMs: number, open: boolean): void {
+    const current = this.vadSegment;
+    if (!current) return;
+    this.vadSegment = undefined;
+    current.segment.ms = roundMs(lastedMs);
+    if (open) current.segment.open = true;
   }
 
   private bufferForStt(data: Uint8Array): void {
@@ -726,7 +759,8 @@ export class VoiceSession {
       paused: false,
       pausedAt: 0,
       falseInterruptions: 0,
-      bargeIn: { vad_starts: 0, transcripts: 0, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 0 },
+      bargeIn: { vad_starts: 0, transcripts: 0, ignored: { echo: 0, backchannel: 0, empty: 0 }, candidates: 0, vad_segments: [] },
+      playingLevels: new LevelHistogram(),
       finalized: false,
     };
     timeline.turnId = turn.id;
@@ -856,6 +890,8 @@ export class VoiceSession {
         if (turn.lastSentMarkIndex === -1) {
           this.clearTimer(timer);
           turn.timeline.mark('tts_first_audio');
+          turn.quietLevels = this.quietLevels;
+          this.quietLevels = new LevelHistogram();
           this.setState('speaking');
         }
         this.deps.transport.sendAudio(turn.epoch, chunk.data);
@@ -961,7 +997,10 @@ export class VoiceSession {
     if (turn.finalized) return;
     turn.finalized = true;
     this.clearTimer(turn.falseInterruptTimer);
+    if (this.vadSegment?.turn === turn) this.closeVadSegment(this.vad.speechMs, true);
     const interrupted = outcome === 'interrupted';
+    const line = this.lineLevel(turn);
+    const { bargeIn } = turn;
     const agent = turn.agentRun?.agent;
     if (agent) this.deps.tools?.onTurnFinalized(turn.id, turn.ackedMarkIndex >= 0 || turn.timeline.has('playback_start'), playedText(turn));
     const summary: TurnSummary = {
@@ -979,13 +1018,28 @@ export class VoiceSession {
       assistant_chars_sent: turn.sentText.length,
       ...(interrupted ? { assistant_chars_heard: turn.heardText.length, heard_text_estimated: !turn.alignmentSeen } : {}),
       false_interruptions: turn.falseInterruptions,
-      ...(turn.bargeIn.vad_starts > 0 || turn.bargeIn.transcripts > 0 ? { barge_in: { ...turn.bargeIn, ignored: { ...turn.bargeIn.ignored } } } : {}),
+      ...(bargeIn.vad_starts > 0 || bargeIn.transcripts > 0
+        ? { barge_in: { ...bargeIn, ignored: { ...bargeIn.ignored }, vad_segments: bargeIn.vad_segments.map((s) => ({ ...s })) } }
+        : {}),
+      ...(line ? { line } : {}),
       ...(error ? { error } : {}),
       ...(this.cfg.logTranscripts ? { user_text: turn.userText, assistant_text: turn.sentText } : {}),
     };
     this.deps.metrics.write(summary);
     this.log.info('turn.summary', { ...summary });
     this.emit({ type: 'turn_summary', summary });
+  }
+
+  private lineLevel(turn: ActiveTurn): LineLevel | undefined {
+    const playing = turn.playingLevels.stats();
+    const quiet = turn.quietLevels?.stats();
+    if (!playing && !quiet) return undefined;
+    return {
+      ...(playing ? { playing } : {}),
+      ...(quiet ? { quiet } : {}),
+      noise_floor_db: Math.round(this.vad.noiseFloor * 10) / 10,
+      threshold_db: Math.round(this.vad.threshold * 10) / 10,
+    };
   }
 
   // ─────────────────────────────── helpers ───────────────────────────────

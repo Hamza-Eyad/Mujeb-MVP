@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AsyncQueue, raceAbort, sleep } from '../../src/core/async.js';
 import { durationMs, pcm16, pcm16Samples } from '../../src/core/audio.js';
 import { CancelledError, ProviderError } from '../../src/core/errors.js';
+import { LevelHistogram } from '../../src/observability/level-histogram.js';
 import { createJsonLogger } from '../../src/observability/logger.js';
 import { latencyPercentiles } from '../../src/observability/turn-metrics.js';
 import { TurnTimeline } from '../../src/observability/turn-timeline.js';
@@ -121,6 +122,17 @@ describe('TurnTimeline', () => {
     t.mark('user_speech_end', { at: 10 });
     t.mark('user_speech_end', { at: 20, overwrite: true });
     expect(t.get('user_speech_end')).toBe(20);
+  });
+});
+
+describe('LevelHistogram', () => {
+  it('gives nearest-rank percentiles at the lower edge of 1 dB bins, clamped to -100..0 dBFS', () => {
+    const h = new LevelHistogram();
+    expect(h.stats()).toBeUndefined();
+    for (let i = 0; i < 10; i += 1) h.add(-180); // digital silence
+    for (let i = 0; i < 70; i += 1) h.add(-40.4);
+    for (let i = 0; i < 20; i += 1) h.add(-15.26);
+    expect(h.stats()).toEqual({ frames: 100, p10_db: -100, p50_db: -41, p90_db: -16, max_db: -15.3 });
   });
 });
 

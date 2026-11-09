@@ -41,6 +41,8 @@ export interface HarnessOptions {
   /** Enables the tool-using path. */
   tools?: AgentToolbox;
   agent?: { maxToolRounds?: number; toolMutationGraceMs?: number; toolDrainTimeoutMs?: number; toolWaitPhrase?: string };
+  /** The session's clock (default performance.now). With fake timers, pass `() => Date.now()`. */
+  now?: () => number;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -63,6 +65,7 @@ export function createHarness(options: HarnessOptions = {}) {
     metrics: sink,
     observer: (event) => events.push(event),
     ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.now ? { now: options.now } : {}),
   });
   return {
     session,
@@ -107,4 +110,13 @@ export function frame(loud: boolean): Uint8Array {
 
 export function frames(loud: boolean, count: number): Uint8Array[] {
   return Array.from({ length: count }, () => frame(loud));
+}
+
+/** 20ms frames of the same tone at a chosen amplitude (60 ≈ -58 dBFS: above silence, below the VAD threshold). */
+export function toneFrames(amplitude: number, count: number): Uint8Array[] {
+  return Array.from({ length: count }, () => {
+    const samples = new Int16Array(320);
+    for (let i = 0; i < samples.length; i += 1) samples[i] = Math.round(amplitude * Math.sin((2 * Math.PI * 220 * i) / 16000));
+    return new Uint8Array(samples.buffer);
+  });
 }
