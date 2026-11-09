@@ -69,6 +69,8 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
 EOF
+# sshd -t needs its privilege separation directory. With ssh.socket (Ubuntu 24.04) it only exists while sshd runs.
+install -d -m 755 /run/sshd
 sshd -t || { rm -f /etc/ssh/sshd_config.d/50-mujeeb.conf; die "sshd rejected the settings: removed them, SSH unchanged"; }
 # Ubuntu 24.04 starts sshd from ssh.socket: reload it if it runs; new connections read the settings anyway.
 systemctl try-reload-or-restart ssh
