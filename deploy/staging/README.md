@@ -1,9 +1,10 @@
-# خادم الـStaging: ‏ExaCall ← Asterisk ← مُجيب على Oracle (الرياض)
+# خادم الـStaging: ‏ExaCall ← Asterisk ← مُجيب على Oracle Cloud (الرياض)
 
 > **بيئة تجريبية ببيانات اصطناعية فقط، وليست إنتاجًا.**
-> - الخطة والقرارات: `plans/2026-11-02-phase-4-oracle-staging.md`، والقرار المعماري `docs/DECISIONS.md` A19.
+> - الخطة والقرارات: `plans/2026-11-02-phase-4-oracle-staging.md`، وتعديلات الخادم الحالي `plans/2026-11-09-skyline-staging-adaptation.md`، والقرار المعماري `docs/DECISIONS.md` A19.
+> - **الخادم الحالي من Skyline**، وهو VM على Oracle Cloud الرياض نفسه (`me-riyadh-1`)، بمعالج ARM ‏(aarch64). نفس السكربتات تعمل على Oracle مباشرة، وعلى x86_64 وaarch64.
 > - المختبر المحلي له ملفاته الخاصة في `deploy/asterisk/lab/`، ولا علاقة لهذه الملفات به.
-> - **كل مرحلة تحتاج موافقة المالك.** والمراحل التي فيها تكلفة Oracle أو منافذ مفتوحة للإنترنت أو مزودون حقيقيون لها موافقة صريحة.
+> - **كل مرحلة تحتاج موافقة المالك.** والمراحل التي فيها تكلفة الخادم أو منافذ مفتوحة للإنترنت أو مزودون حقيقيون لها موافقة صريحة.
 
 ```text
 جوال ──PSTN──▶ ExaCall SBC ──SIP 5060 + RTP 10000–10199 (عناوين ExaCall فقط)──▶ VM ‏(me-riyadh-1، IP عام محجوز)
@@ -52,15 +53,20 @@
 | `/var/log/asterisk/messages` | التحذيرات والأخطاء فقط، 14 يومًا |
 | `/var/backups/mujeeb-asterisk/` | نسخ `/etc/asterisk` قبل كل تغيير |
 
-## المرحلة 2: الخادم (💰 تبدأ تكلفة Oracle المستمرة)
+## المرحلة 2: الخادم (💰 تبدأ التكلفة الشهرية)
 
-1. قبل الإنشاء: تقدير التكلفة من حاسبة الحساب (الخطة، المرحلة 2)، وBudget مع تنبيهات.
-2. إنشاء الموارد (المالك): VCN، وNSG (SSH من عنوانك فقط)، وReserved IP، وVM ‏Ubuntu 24.04 x86_64.
-3. على الخادم، بحسابك (ليس root)، بعد أن تقرر أي commit تستخدم:
+1. **إنشاء الخادم (المالك):**
+   - **Skyline (الحالي):** المنطقة Riyadh، وUbuntu 24.04 LTS، والدخول بـSSH key فقط، والشبكة Public، والـFirewall ‏"SSH only". وبعد الإنشاء مباشرة: مصدر قاعدة TCP 22 في Firewall لوحة التحكم = عنوانك `/32`. الدخول بـ`ubuntu@<IP>`، لأن root مرفوض.
+   - **Oracle مباشرة (بديل):** تقدير التكلفة وBudget (الخطة، المرحلة 2)، ثم VCN، وNSG (SSH من عنوانك فقط)، وReserved IP، وVM ‏Ubuntu 24.04.
+2. على الخادم، بحسابك (ليس root)، بعد أن تقرر أي commit تستخدم:
    ```bash
    git clone https://github.com/<owner>/<repo>.git ~/mujeeb-src && cd ~/mujeeb-src && git checkout <sha>
    sudo bash deploy/staging/bootstrap-host.sh        # يطبع BOOTSTRAP_OK
    ```
+   - يثبّت التحديثات المعلقة، ويضيف `REJECT` في آخر INPUT إذا لم تكن موجودة (صورة Skyline بلاها).
+   - **قبل إغلاق الجلسة:** افتح جلسة SSH ثانية وتأكد أنك تدخل.
+   - إذا طبع `REBOOT_REQUIRED`: ‏`sudo reboot`، ثم تأكد من الدخول، ومن أن الـIP العام لم يتغير، ومن `sudo iptables -S INPUT`.
+3. **لا `do-release-upgrade`** حتى لو اقترح الخادم نسخة أحدث: كل شيء مبني على 24.04.
 
 ## المرحلة 3: Asterisk ومُجيب الوهمي، والاختبارات
 
@@ -128,7 +134,8 @@ sudo bash /opt/mujeeb/current/deploy/staging/firewall-sip.sh
 sudo bash /opt/mujeeb/current/deploy/asterisk/staging/trunk-check.sh
 ```
 
-- وأضف نفس العناوين في الـNSG يدويًا.
+- وأضف نفس العناوين يدويًا في Firewall لوحة تحكم Skyline (أو الـNSG في Oracle): ‏UDP ‏`SIP_PORT` من عناوين الإشارة، وUDP ‏`RTP_START`–`RTP_END` من عناوين الصوت. الحد هناك 50 قاعدة.
+- **قبلها:** ورقة ترخيص ExaCall من الهيئة (CST). Skyline تشترطها قبل أي مكالمات SIP من الخادم.
 - **البوابة:** مكالمة من جوالك إلى الرقم: الرسالة ثم صدى صوتك. وأثناءها `core show channels verbose` و`pjsip show channelstats`.
 - التشخيص (`pjsip set logger on`) من الـremote console فقط، ثم `off`، ثم `privacy-scan.sh`.
 
@@ -156,5 +163,6 @@ sudo bash /opt/mujeeb/current/deploy/asterisk/staging/trunk-check.sh
 
 - **لا drain في الكود:** إعادة تشغيل مُجيب تقطع المكالمات الجارية. النشر يرفض إذا وُجدت مكالمات، لكن تبقى ثوانٍ قليلة بين الفحص وإعادة التشغيل.
 - **الـDID من `To` لا يُقرأ إذا كان `tel:` URI.** المرحلة 5 تسجل ما ترسله ExaCall فعلًا.
-- **الـNSG في OCI لا يُرى من الخادم:** يُقارن يدويًا.
+- **Firewall المزود (لوحة Skyline أو الـNSG في OCI) لا يُرى من الخادم:** يُقارن يدويًا.
+- **لا snapshots ولا نسخ احتياطي في Skyline:** الخادم يُبنى من جديد من المستودع والسكربتات. احتفظ بنسخة من `/etc/mujeeb/*.env` و`routes.json` خارج الخادم في مكان آمن، وليس في المستودع: فيها أسرار.
 - **لم يُختبر شيء هنا على خادم حقيقي بعد** (المرحلة 1 فحوص ثابتة فقط): قائمة الـmodules، وسيناريو SIPp، وsystemd، وiptables، و`flock` كلها تُثبت في المرحلة 3.
