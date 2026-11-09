@@ -197,6 +197,9 @@ load = app_verbose.so
 load = func_callerid.so
 load = func_cut.so
 load = bridge_simple.so
+
+; The CLI command "channel originate", used by synthetic-calls.sh (stage 3 load tests). CLI only: there is no AMI.
+load = res_clioriginate.so
 EOF
 
 cat > "$OUT/logger.conf" <<EOF
