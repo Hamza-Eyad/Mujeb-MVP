@@ -17,7 +17,8 @@
 # Patterns:
 # - mobile: a Saudi mobile in any common form (+9665…, 009665…, 9665…, 05…). Masked numbers (•••••••567) do not match;
 # - id_like: ten digits starting with 1 or 2 (national ID / iqama form). Digits next to a dot are excluded, so
-#   Asterisk call IDs such as 1762070000.12 do not match; any other hit is looked at by hand;
+#   Asterisk call IDs such as 1762070000.12 do not match. So are epoch seconds after "UTC (": the kernel writes
+#   "rtc-efi: setting system clock to ... UTC (1794...)" to syslog at every boot. Any other hit is looked at by hand;
 # - transcript: the user_text, assistant_text or text fields of Mujeeb's logs (text_chars does not match).
 set -euo pipefail
 export LC_ALL=C.UTF-8
@@ -33,7 +34,7 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 PAT_MOBILE='(?<![0-9])(?:\+966|00966|966|0)5[0-9]{8}(?![0-9])'
-PAT_ID='(?<![0-9.])[12][0-9]{9}(?![0-9.])'
+PAT_ID='(?<![0-9.])(?<!UTC \()[12][0-9]{9}(?![0-9.])'
 PAT_TEXT='"(?:user_text|assistant_text|text)"\s*:'
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
