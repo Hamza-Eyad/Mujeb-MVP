@@ -5,8 +5,8 @@
 #   trunk-check.sh [--env FILE]
 #
 # 1. Asterisk loaded it: endpoint exacall, identify addresses = TRUNK_SIGNALING_IPS, the from-trunk dialplan.
-# 2. The host firewall matches host.env exactly (firewall-sip.sh --check). The OCI security group cannot be seen from
-#    here: compare it by hand in the console.
+# 2. The host firewall matches host.env exactly (firewall-sip.sh --check). The provider's firewall (OCI security
+#    group, or Skyline's portal Firewall) cannot be seen from here: compare it by hand in the console.
 # 3. Signaling out: "Registered" for TRUNK_AUTH=registration; "Avail" only when TRUNK_QUALIFY=yes (a carrier that
 #    ignores OPTIONS shows Unavailable while calls work, so it is skipped by default). Neither proves inbound calls.
 # 4. Not here: a call from a phone to the DID in echo mode (README, stage 5). Only that proves routing, identification,
@@ -39,7 +39,7 @@ layer "1. loaded in Asterisk" "$loaded"
 
 # 2. Firewall
 if bash "$HERE/../../staging/firewall-sip.sh" --env "$ENV_FILE" --check | sed 's/^/  /'; then layer "2. host firewall" PASS; else layer "2. host firewall" FAIL; fi
-echo "  (the OCI network security group: compare it with host.env by hand)"
+echo "  (the provider's firewall, OCI security group or Skyline portal: compare it with host.env by hand)"
 
 # 3. Signaling out
 if [ "${TRUNK_AUTH:-ip}" = registration ]; then

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Staging server, stage 5: allow SIP and RTP from ExaCall's addresses only (run as root).
 # Reads TRUNK_SIGNALING_IPS, TRUNK_MEDIA_IPS, TRUNK_TRANSPORT, SIP_PORT, RTP_START and RTP_END from host.env.
-# The rules live in their own chain, MUJEEB-SIP, jumped to from INPUT just above the image's first REJECT rule (on
-# Oracle's Ubuntu images a rule after it never matches). Empty address lists give an empty chain: nothing is open.
-# The OCI network security group must allow the same addresses: this script can neither see nor change it.
+# The rules live in their own chain, MUJEEB-SIP, jumped to from INPUT just above its first REJECT rule (a rule after
+# it never matches). That REJECT is what keeps everything else closed: Oracle's images ship it, bootstrap-host.sh adds
+# it where they do not, and this script refuses to run without it. Empty address lists give an empty chain.
+# The provider's firewall (the OCI network security group, or Skyline's portal Firewall) must allow the same
+# addresses: this script can neither see nor change it.
 #
 #   firewall-sip.sh [--env FILE] [--check]
 #     --check  change nothing: compare the live rules with host.env and exit 1 on any difference
@@ -62,6 +64,8 @@ if [ "$CHECK" = 1 ]; then
     if [ "$jump" = 0 ]; then echo "MISSING: INPUT does not jump to $CHAIN"; ok=0
     elif [ "$reject" != 0 ] && [ "$jump" -gt "$reject" ]; then echo "WRONG ORDER: the jump to $CHAIN is below REJECT"; ok=0; fi
   fi
+  read -r _ reject < <(positions)
+  if [ "$reject" = 0 ]; then echo "MISSING: INPUT has no REJECT, so it accepts everything (run bootstrap-host.sh)"; ok=0; fi
   # Nothing else may open the SIP port or the RTP range to any source.
   if iptables -S INPUT | grep -E -- "--dport ($SIP_PORT|$RTP_START:$RTP_END)( |$)" | has -v -- ' -s '; then
     echo "OPEN: an INPUT rule accepts SIP or RTP from any address"
@@ -71,6 +75,8 @@ if [ "$CHECK" = 1 ]; then
   exit 1
 fi
 
+read -r _ reject < <(positions)
+[ "$reject" != 0 ] || die "INPUT has no REJECT rule, so it accepts everything: run bootstrap-host.sh first"
 iptables -N "$CHAIN" 2>/dev/null || true
 iptables -F "$CHAIN"
 while IFS= read -r rule; do
