@@ -95,8 +95,13 @@ fi
 
 say "journald: 1 GB, 14 days, not copied to syslog"
 install -d /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/50-mujeeb.conf <<'EOF'
+# Drop-ins from every directory apply in file name order, and the rsyslog package ships
+# /usr/lib/systemd/journald.conf.d/syslog.conf with ForwardToSyslog=yes: a name sorting before it ("50-...") lost,
+# so every journal line was copied to /var/log/syslog. "zz-" sorts after any packaged drop-in.
+rm -f /etc/systemd/journald.conf.d/50-mujeeb.conf
+cat > /etc/systemd/journald.conf.d/zz-mujeeb.conf <<'EOF'
 # Staging (bootstrap-host.sh): the journal is the only store for service logs, with one retention period.
+# Named zz- so it is read last and wins over packaged drop-ins (rsyslog's syslog.conf sets ForwardToSyslog=yes).
 [Journal]
 Storage=persistent
 SystemMaxUse=1G
@@ -104,6 +109,8 @@ MaxRetentionSec=14day
 ForwardToSyslog=no
 EOF
 systemctl restart systemd-journald
+systemd-analyze cat-config systemd/journald.conf | grep -E '^ForwardToSyslog=' | tail -1 | has -x 'ForwardToSyslog=no' \
+  || die "journald still forwards to syslog: check the drop-ins (systemd-analyze cat-config systemd/journald.conf)"
 
 say "users and directories"
 id mujeeb >/dev/null 2>&1 || useradd --system --home-dir /var/lib/mujeeb --shell /usr/sbin/nologin mujeeb
