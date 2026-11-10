@@ -1,0 +1,19 @@
+{
+  "tenantId": "showcase",
+  "agentId": "showcase-clinic",
+  "displayName": "مجمّع مُجيب الطبي",
+  "languageCode": "ar",
+  "greeting": "هلا والله، معك مُجيب من مجمّع مُجيب الطبي. كيف أقدر أخدمك؟",
+  "instructionsFile": "instructions.md",
+  "historyMaxTurns": 12,
+  "timezone": "Asia/Riyadh",
+  "schedulingDataset": "../../test-data/showcase-clinic.dataset.json",
+  "appointmentTools": {
+    "instructionsFile": "tools.md",
+    "patientVerification": "dev-identifier-dob",
+    "maxToolRounds": 5,
+    "pendingActionTtlSec": 120,
+    "maxReconfirmations": 2,
+    "waitPhrase": "لحظه أشيّك لك."
+  }
+}

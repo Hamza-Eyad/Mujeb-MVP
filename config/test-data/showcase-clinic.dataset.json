@@ -1,0 +1,217 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "clinic": {
+    "key": "showcase-clinic",
+    "name": "مجمّع مُجيب الطبي",
+    "locationName": "الفرع الرئيسي",
+    "timezone": "Asia/Riyadh"
+  },
+  "services": [
+    {
+      "key": "family-medicine",
+      "name": "طب الأسرة",
+      "aliases": ["طب عام", "طبيب عام", "الطبيب العام", "عام", "family medicine", "general practice"],
+      "durationMinutes": 20
+    },
+    {
+      "key": "internal-medicine",
+      "name": "الباطنية",
+      "aliases": ["باطنية", "باطني", "أمراض باطنية", "الأمراض الباطنية", "internal medicine"],
+      "durationMinutes": 20
+    },
+    {
+      "key": "pediatrics",
+      "name": "طب الأطفال",
+      "aliases": ["أطفال", "الأطفال", "طبيب أطفال", "pediatrics"],
+      "durationMinutes": 20
+    },
+    {
+      "key": "dermatology",
+      "name": "الجلدية",
+      "aliases": ["جلدية", "جلد", "الأمراض الجلدية", "البشرة", "dermatology"],
+      "durationMinutes": 30
+    },
+    {
+      "key": "dental",
+      "name": "الأسنان",
+      "aliases": ["أسنان", "سنون", "ضرس", "ضروس", "طبيب أسنان", "dental", "dentistry"],
+      "durationMinutes": 30
+    },
+    {
+      "key": "ophthalmology",
+      "name": "العيون",
+      "aliases": ["عيون", "عين", "طب العيون", "النظر", "ophthalmology"],
+      "durationMinutes": 20
+    },
+    {
+      "key": "obgyn",
+      "name": "النساء والولادة",
+      "aliases": ["نساء", "ولادة", "نسائية", "حمل", "متابعة حمل", "obgyn", "gynecology"],
+      "durationMinutes": 30
+    },
+    {
+      "key": "orthopedics",
+      "name": "العظام",
+      "aliases": ["عظام", "عظم", "مفاصل", "ظهر", "ركبة", "orthopedics"],
+      "durationMinutes": 20
+    }
+  ],
+  "practitioners": [
+    {
+      "key": "dr-fahad",
+      "name": "فهد العتيبي",
+      "gender": "male",
+      "aliases": ["Fahad Alotaibi"],
+      "serviceKeys": ["family-medicine"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "21:00" }]
+    },
+    {
+      "key": "dr-maha",
+      "name": "مها الشمري",
+      "gender": "female",
+      "aliases": ["Maha Alshammari"],
+      "serviceKeys": ["family-medicine"],
+      "availability": [{ "days": ["sat", "sun", "mon", "tue", "wed", "thu"], "start": "08:00", "end": "13:00" }]
+    },
+    {
+      "key": "dr-ibrahim",
+      "name": "إبراهيم الحربي",
+      "gender": "male",
+      "aliases": ["Ibrahim Alharbi"],
+      "serviceKeys": ["internal-medicine"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "14:00" }]
+    },
+    {
+      "key": "dr-khalid",
+      "name": "خالد الشهري",
+      "gender": "male",
+      "aliases": ["Khalid Alshehri"],
+      "serviceKeys": ["pediatrics"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" }]
+    },
+    {
+      "key": "dr-reem",
+      "name": "ريم القحطاني",
+      "gender": "female",
+      "aliases": ["Reem Alqahtani"],
+      "serviceKeys": ["pediatrics"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "20:00" }]
+    },
+    {
+      "key": "dr-sara",
+      "name": "سارة الغامدي",
+      "gender": "female",
+      "aliases": ["Sara Alghamdi"],
+      "serviceKeys": ["dermatology"],
+      "availability": [
+        { "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" },
+        { "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "19:00" }
+      ]
+    },
+    {
+      "key": "dr-majed",
+      "name": "ماجد الدوسري",
+      "gender": "male",
+      "aliases": ["Majed Aldosari"],
+      "serviceKeys": ["dermatology"],
+      "availability": [{ "days": ["sat", "mon", "wed"], "start": "16:00", "end": "21:00" }]
+    },
+    {
+      "key": "dr-nasser",
+      "name": "ناصر المطيري",
+      "gender": "male",
+      "aliases": ["Nasser Almutairi"],
+      "serviceKeys": ["dental"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "16:00", "end": "21:00" }]
+    },
+    {
+      "key": "dr-lama",
+      "name": "لمى الزهراني",
+      "gender": "female",
+      "aliases": ["Lama Alzahrani"],
+      "serviceKeys": ["dental"],
+      "availability": [{ "days": ["sat", "sun", "mon", "tue", "wed"], "start": "09:00", "end": "14:00" }]
+    },
+    {
+      "key": "dr-abdulaziz",
+      "name": "عبدالعزيز العنزي",
+      "gender": "male",
+      "aliases": ["Abdulaziz Alanazi"],
+      "serviceKeys": ["ophthalmology"],
+      "availability": [{ "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" }]
+    },
+    {
+      "key": "dr-hind",
+      "name": "هند السبيعي",
+      "gender": "female",
+      "aliases": ["Hind Alsubaie"],
+      "serviceKeys": ["obgyn"],
+      "availability": [
+        { "days": ["sun", "mon", "tue", "wed", "thu"], "start": "09:00", "end": "13:00" },
+        { "days": ["sun", "tue"], "start": "16:00", "end": "20:00" }
+      ]
+    },
+    {
+      "key": "dr-saad",
+      "name": "سعد القرني",
+      "gender": "male",
+      "aliases": ["Saad Alqarni"],
+      "serviceKeys": ["orthopedics"],
+      "availability": [{ "days": ["sat", "sun", "tue", "thu"], "start": "16:00", "end": "21:00" }]
+    }
+  ],
+  "blocks": [],
+  "patients": [
+    {
+      "key": "patient-one-upcoming",
+      "fullName": "عبدالله محمد الحربي",
+      "firstName": "عبدالله",
+      "nationalId": "1000000100",
+      "phone": "+966500000101",
+      "birthDate": "1990-03-14",
+      "gender": "male"
+    },
+    {
+      "key": "patient-two-upcoming",
+      "fullName": "نورة سعد الدوسري",
+      "firstName": "نورة",
+      "nationalId": "1000000200",
+      "phone": "+966500000102",
+      "birthDate": "1985-07-02",
+      "gender": "female"
+    },
+    {
+      "key": "patient-mother",
+      "fullName": "هيا فهد الزهراني",
+      "firstName": "هيا",
+      "nationalId": "1000000300",
+      "phone": "+966500000103",
+      "birthDate": "1992-11-20",
+      "gender": "female"
+    },
+    {
+      "key": "patient-child",
+      "fullName": "جود ماجد العنزي",
+      "firstName": "جود",
+      "nationalId": "1000000400",
+      "phone": "+966500000103",
+      "birthDate": "2020-05-09",
+      "gender": "female"
+    },
+    {
+      "key": "patient-no-appointments",
+      "fullName": "تركي سلمان القرني",
+      "firstName": "تركي",
+      "nationalId": "1000000500",
+      "phone": "+966500000105",
+      "birthDate": "1978-01-25",
+      "gender": "male"
+    }
+  ],
+  "appointments": [
+    { "key": "appt-one", "patientKey": "patient-one-upcoming", "practitionerKey": "dr-fahad", "serviceKey": "family-medicine", "workday": 2, "time": "17:00" },
+    { "key": "appt-two-a", "patientKey": "patient-two-upcoming", "practitionerKey": "dr-sara", "serviceKey": "dermatology", "workday": 1, "time": "10:00" },
+    { "key": "appt-child", "patientKey": "patient-child", "practitionerKey": "dr-reem", "serviceKey": "pediatrics", "workday": 1, "time": "16:40" }
+  ]
+}
