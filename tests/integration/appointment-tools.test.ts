@@ -611,6 +611,31 @@ describe('AppointmentTools', () => {
     expect(found).not.toHaveProperty('hint');
   });
 
+  it('finds free times by a specialty or doctor name in one call, without a directory search first', async () => {
+    const { turn } = setup();
+    const call = turn('أبي موعد أطفال');
+    const base = { practitioner_ref: null, date_from: TODAY, date_to: null, part_of_day: null, for_appointment_ref: null };
+    const byName = await call('search_available_slots', { ...base, service_ref: 'عيادة الأطفال' });
+    expect(byName).toMatchObject({ status: 'ok', service: { name: 'طب الأطفال' } });
+    expect((byName['slots'] as unknown[]).length).toBeGreaterThan(0);
+    expect(byName).not.toHaveProperty('approximate');
+    // A doctor by name: that doctor's specialty, only that doctor's times.
+    const byDoctor = await call('search_available_slots', { ...base, service_ref: 'الدكتورة ريم' });
+    expect(byDoctor).toMatchObject({ status: 'ok', service: { name: 'طب الأطفال' }, practitioner: { name: 'ريم القحطاني' } });
+    for (const s of byDoctor['slots'] as { doctor: string }[]) expect(s.doctor).toBe('ريم القحطاني');
+    // Specialty and doctor both by name.
+    const both = await call('search_available_slots', { ...base, service_ref: 'أطفال', practitioner_ref: 'خالد' });
+    for (const s of both['slots'] as { doctor: string }[]) expect(s.doctor).toBe('خالد الشهري');
+    // Misheard by one letter: found, flagged approximate.
+    expect(await call('search_available_slots', { ...base, service_ref: 'الأطفاك' })).toMatchObject({ status: 'ok', approximate: true, service: { name: 'طب الأطفال' } });
+    // Nothing fits, or an invented ref: refused, nothing guessed.
+    expect(await call('search_available_slots', { ...base, service_ref: 'عيادة القلب' })).toMatchObject({ status: 'service_not_found' });
+    expect(await call('search_available_slots', { ...base, service_ref: 'V9' })).toMatchObject({ status: 'unknown_ref' });
+    // The returned ref works like one from the directory.
+    const ref = str((byName['service'] as Record<string, unknown>)['ref']);
+    expect(await call('search_available_slots', { ...base, service_ref: ref })).toMatchObject({ status: 'ok' });
+  });
+
   it('finds a specialty the STT misheard by one letter, and says the match is approximate', async () => {
     const { turn } = setup();
     const call = turn('');

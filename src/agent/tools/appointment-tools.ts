@@ -336,8 +336,9 @@ export class AppointmentTools {
   }
 
   private async searchSlots(input: SearchAvailableSlotsInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
-    const service = this.resolve('service', input.service_ref);
-    const practitioner = input.practitioner_ref !== null ? this.resolve('practitioner', input.practitioner_ref) : undefined;
+    // A ref from an earlier result, or a name as the caller said it (one model round instead of directory + slots).
+    const target = await this.slotTarget(input.service_ref, input.practitioner_ref, turn);
+    const { service, practitioner } = target;
     let ignoreAppointmentId: string | undefined;
     if (input.for_appointment_ref !== null) {
       const appointment = this.ownedAppointment(input.for_appointment_ref);
@@ -400,6 +401,13 @@ export class AppointmentTools {
     if (slots.length > 0) this.slotsOffered = true;
     return {
       status: 'ok',
+      ...(target.byName
+        ? {
+            service: { ref: this.refs.register('service', service), name: service.name },
+            ...(practitioner ? { practitioner: { ref: this.refs.register('practitioner', practitioner), name: practitioner.name } } : {}),
+            ...(target.approximate ? { approximate: true } : {}),
+          }
+        : {}),
       window,
       ...(nearestAfterRequest ? { nearest_after_request: true, requested_window: { from, to } } : {}),
       slots: slots.map((s) => ({
@@ -415,6 +423,62 @@ export class AppointmentTools {
         : {}),
       ...(slots.length === 0 ? { hint: 'No free time in this window or the two weeks after it. Offer another practitioner or service.' } : {}),
     };
+  }
+
+  /**
+   * The service (and practitioner) of a slot search: refs from earlier results, or names as the caller said them. A
+   * name may be a specialty, or a doctor (whose own specialty is then used). Ref-like values (V1, D2) are refs only,
+   * so an invented ref is still refused.
+   */
+  private async slotTarget(
+    serviceValue: string,
+    practitionerValue: string | null,
+    turn: ToolTurnContext,
+  ): Promise<{ service: RefValues['service']; practitioner?: RefValues['practitioner']; byName: boolean; approximate: boolean }> {
+    const looksLikeRef = (value: string) => /^[a-z]\d{1,4}$/i.test(value.trim());
+    let byName = false;
+    let approximate = false;
+    let service: RefValues['service'] | undefined;
+    let practitioner: RefValues['practitioner'] | undefined;
+    if (looksLikeRef(serviceValue)) {
+      service = this.resolve('service', serviceValue);
+    } else {
+      byName = true;
+      const found = await this.read(turn, (ctx) => this.o.scheduling.searchDirectory(ctx, { text: serviceValue, kind: 'any', limit: this.o.maxResults }));
+      const top = found.entries[0];
+      if (top?.kind === 'service') {
+        service = top.service;
+        approximate = top.score < APPROXIMATE_BELOW;
+      } else if (top?.kind === 'practitioner' && top.practitioner.services.length === 1 && top.practitioner.services[0] !== undefined) {
+        practitioner = top.practitioner;
+        service = top.practitioner.services[0];
+        approximate = top.score < APPROXIMATE_BELOW;
+      }
+      if (service === undefined) {
+        throw new ToolRejection(
+          'service_not_found',
+          `No specialty or doctor matches '${serviceValue}'. List them with search_clinic_directory (query null) and pick the one that fits the caller.`,
+        );
+      }
+    }
+    if (practitionerValue !== null) {
+      if (looksLikeRef(practitionerValue)) {
+        practitioner = this.resolve('practitioner', practitionerValue);
+      } else {
+        byName = true;
+        const serviceId = service.id;
+        const found = await this.read(turn, (ctx) =>
+          this.o.scheduling.searchDirectory(ctx, { text: practitionerValue, kind: 'practitioner', serviceId, limit: 1 }),
+        );
+        const top = found.entries[0];
+        if (top?.kind !== 'practitioner') {
+          throw new ToolRejection('practitioner_not_found', `No doctor of ${service.name} matches '${practitionerValue}'. Search without a doctor, or list the doctors with search_clinic_directory.`);
+        }
+        practitioner = top.practitioner;
+        if (top.score < APPROXIMATE_BELOW) approximate = true;
+      }
+    }
+    return { service, ...(practitioner ? { practitioner } : {}), byName, approximate };
   }
 
   private async findPatient(input: FindPatientInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
