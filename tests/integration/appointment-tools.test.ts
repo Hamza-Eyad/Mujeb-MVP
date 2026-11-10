@@ -543,6 +543,25 @@ describe('AppointmentTools', () => {
     expect((byPhone['checked'] as Record<string, unknown>)['birth_date']).toBe(spokenCalendarDate('2002-03-15'));
   });
 
+  it('verifies by national ID and date of birth even when the phone said differs from the one on file (owner call, 2026-11-09)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    // Turki's ID and date of birth, with a phone that is not his: the ID identifies the file.
+    expect(await call('find_patient', { national_id: '1000000500', phone: '0500000177', birth_date: '1978-01-25' })).toMatchObject({ status: 'verified' });
+    // A mistyped ID falls back to the phone.
+    const second = turn('');
+    expect(await second('find_patient', { national_id: '1000000599', phone: '0500000105', birth_date: '1978-01-25' })).toMatchObject({ status: 'verified' });
+  });
+
+  it('never suggests a transfer or a staff member in a tool hint (not available)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    for (let i = 0; i < 3; i += 1) await call('find_patient', { national_id: '1000000500', phone: null, birth_date: '1999-01-01' });
+    const locked = await call('find_patient', { national_id: '1000000500', phone: null, birth_date: '1978-01-25' });
+    expect(locked).toMatchObject({ status: 'locked' });
+    expect(str(locked['hint'])).toMatch(/Do not offer a transfer/);
+  });
+
   it('opens a file asking only for what is missing: the ID and date of birth said before are reused and read back', async () => {
     const { turn, system, ctx } = setup();
     let call = turn('');
@@ -590,6 +609,17 @@ describe('AppointmentTools', () => {
     const found = await call('search_clinic_directory', { query: 'جلدية', kind: 'service', service_ref: null });
     expect(found).toMatchObject({ matched: true });
     expect(found).not.toHaveProperty('hint');
+  });
+
+  it('finds a specialty the STT misheard by one letter, and says the match is approximate', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    const out = await call('search_clinic_directory', { query: 'عيادة الأطفاك', kind: 'service', service_ref: null });
+    expect(out).toMatchObject({ status: 'ok', matched: true, approximate: true });
+    expect((out['results'] as { name: string }[])[0]?.name).toBe('طب الأطفال');
+    expect(str(out['hint'])).toMatch(/approximately/);
+    const exact = await call('search_clinic_directory', { query: 'جلدية', kind: 'service', service_ref: null });
+    expect(exact).not.toHaveProperty('approximate');
   });
 
   it('offers the nearest free times after the asked window when nothing is free in it (the only doctor on leave)', async () => {

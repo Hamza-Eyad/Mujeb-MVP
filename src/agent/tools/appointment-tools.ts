@@ -108,6 +108,8 @@ const ACTIVE: ReadonlySet<AppointmentStatus> = new Set(['booked', 'pending']);
 const LIST_LIMIT = 10;
 /** Directory entries returned when the model lists the directory (no name to search). */
 const DIRECTORY_LIST_LIMIT = 20;
+/** A directory match below this score is a one-letter-off match (core/text-match FUZZY_WEIGHT): reported as approximate. */
+const APPROXIMATE_BELOW = 0.7;
 
 /** An early, expected refusal (bad ref, invalid input, …) turned into a tool result. */
 class ToolRejection extends Error {
@@ -311,9 +313,12 @@ export class AppointmentTools {
             services: e.practitioner.services.map((s) => ({ ref: this.refs.register('service', s), name: s.name })),
           },
     );
+    // Only a weak (one-letter-off) match: most likely the STT misheard the name (e.g. "الأفنان" for الأسنان).
+    const approximate = matched && input.query !== null && (result.entries[0]?.score ?? 1) < APPROXIMATE_BELOW;
     return {
       status: 'ok',
       matched,
+      ...(approximate ? { approximate: true } : {}),
       results,
       more: result.hasMore,
       ...(!matched
@@ -322,6 +327,9 @@ export class AppointmentTools {
               "Nothing matched that name. results lists everything there is: if one fits the caller's need (a symptom, a procedure), " +
               'use it; only if none fits, tell the caller it is not available and offer the closest.',
           }
+        : {}),
+      ...(approximate
+        ? { hint: 'The name matched only approximately (the STT probably misheard it): continue with the first result, saying its name; the caller can correct you.' }
         : {}),
       ...(results.length === 0 ? { hint: 'Nothing listed. Ask the caller to rephrase.' } : {}),
     };
@@ -450,9 +458,14 @@ export class AppointmentTools {
     this.said.birthDate = birthDate;
     const reusedNote = reused.length > 0 ? { reused_from_earlier: reused } : {};
 
-    const candidates = await this.read(turn, (ctx) =>
-      this.o.scheduling.findPatients(ctx, { ...(lookupId !== undefined ? { nationalId: lookupId } : {}), ...(lookupPhone !== undefined ? { phone: lookupPhone } : {}) }),
-    );
+    // The national ID identifies the file; the date of birth verifies it. A phone that differs from the one on file
+    // (changed, or a family member's) must not block a caller who gave the right ID (owner's call, 2026-11-09), so the
+    // phone is searched only without an ID, or when the ID finds no file.
+    let candidates =
+      lookupId !== undefined ? await this.read(turn, (ctx) => this.o.scheduling.findPatients(ctx, { nationalId: lookupId })) : [];
+    if (candidates.length === 0 && lookupPhone !== undefined) {
+      candidates = await this.read(turn, (ctx) => this.o.scheduling.findPatients(ctx, { phone: lookupPhone }));
+    }
     const outcome = this.verification.evaluate(candidates, birthDate);
     this.log.info('patient.verification', { turn_id: turn.turnId, policy: this.verificationPolicy, outcome: outcome.status, reused: reused.length });
     switch (outcome.status) {
@@ -758,7 +771,7 @@ export class AppointmentTools {
         case 'already_exists':
           return {
             status: 'already_exists',
-            hint: 'A record with this national ID already exists. Nothing was changed. Verify with find_patient, or offer to connect with staff.',
+            hint: 'A record with this national ID already exists. Nothing was changed. Tell the caller they already have a file and verify them with find_patient (the date of birth on that file). Do not offer a transfer, a callback or a staff member (not available in this call).',
           };
         case 'not_found':
         case 'invalid_state':
@@ -767,7 +780,7 @@ export class AppointmentTools {
           return { status: 'rejected', hint: 'The system refused the request. Nothing was changed.' };
       }
     }
-    return { status: 'system_unavailable', hint: 'The scheduling system refused the request. Nothing was changed. Apologize and offer to try later or reach staff.' };
+    return { status: 'system_unavailable', hint: 'The scheduling system refused the request. Nothing was changed. Apologize and offer to try again shortly. Do not offer a transfer, a callback or a staff member (not available in this call).' };
   }
 
   // ─────────────────────────────── helpers ───────────────────────────────
@@ -792,7 +805,7 @@ export class AppointmentTools {
     if (err instanceof ProviderError && err.kind === 'timeout') {
       return { status: 'system_timeout', hint: 'The scheduling system did not answer in time. Nothing was changed. Apologize and offer to try again.' };
     }
-    return { status: 'system_unavailable', hint: 'The scheduling system is not available. Nothing was changed. Apologize and offer to try later or reach staff.' };
+    return { status: 'system_unavailable', hint: 'The scheduling system is not available. Nothing was changed. Apologize and offer to try again shortly. Do not offer a transfer, a callback or a staff member (not available in this call).' };
   }
 
   private async read<T>(turn: ToolTurnContext, fn: (ctx: SchedulingContext) => Promise<T>): Promise<T> {
@@ -908,7 +921,12 @@ function birthDateRejection(raw: string, hint: string): ToolRejection {
 }
 
 function lockedOutput(): Record<string, unknown> {
-  return { status: 'locked', hint: 'Too many failed verification attempts in this call. Offer to connect the caller with staff.' };
+  return {
+    status: 'locked',
+    hint:
+      'Too many failed verification attempts: identity cannot be checked again in this call. Offer what needs no identity (clinic information, free times) ' +
+      'and say the reception can help at the visit. Do not offer a transfer, a callback or a staff member (not available in this call).',
+  };
 }
 
 function serviceChangeRejection(): ToolRejection {

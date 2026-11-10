@@ -149,6 +149,7 @@ async function startCall() {
 function expectSpeakable(t: Turn): void {
   expect(t.reply, 'never calls itself a demo or a test').not.toMatch(/تجريبي|تجريبية|اختبار/);
   expect(t.reply, 'numbers are written as words').not.toMatch(/[0-9٠-٩]/);
+  expect(t.reply, 'never offers a transfer (not available)').not.toMatch(/أحوّلك|أحولك|أوصلك (لموظ|بموظ)|أوصلك للاستقبال/);
   expect(t.reply.length).toBeGreaterThan(0);
 }
 
@@ -274,6 +275,12 @@ describe.skipIf(!ENABLED)('live: the showcase clinic answers a manager demo', ()
     const id = await call.say('رقم الجوال 0500000105 وتاريخ الميلاد 2511978');
     const verified = used(id, 'find_patient', 'verified') || (id.reply.includes('يناير') && used(await call.say('إيه صح'), 'find_patient', 'verified'));
     expect(verified, 'verified with 25 January 1978, at most after one yes').toBe(true);
+  });
+
+  it('takes a clinic name the STT misheard as the closest one (owner call: "الأفنان" for الأسنان)', async () => {
+    const t = await (await startCall()).say('وش الخدمات اللي عندكم في عيادة الأفنان؟');
+    expect(t.reply).toMatch(/الأسنان/);
+    expect(t.reply, 'does not say the clinic is missing').not.toMatch(/ما عندنا عيادة|غير متوفر|ما هو موجود/);
   });
 
   it('turns broken date fragments from the owner\'s call into one clear question, never the same one again and again', async () => {
