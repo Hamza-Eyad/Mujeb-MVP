@@ -40,6 +40,8 @@ const envSchema = z.object({
   MUJEEB_DUPLEX_MODE: z.enum(['full', 'half']).default('full'),
   MUJEEB_FALSE_INTERRUPTION_TIMEOUT_MS: positiveMs(1500),
   MUJEEB_ECHO_TAIL_MS: z.coerce.number().int().min(0).default(1200),
+  /** Extra wait before answering when the caller's words end with a number (dictated ID/phone/date). 0 = off. */
+  MUJEEB_NUMBER_HOLD_MS: z.coerce.number().int().min(0).max(5000).default(1200),
   MUJEEB_TOOL_CONFIRM_GRACE_MS: z.coerce.number().int().min(0).max(3000).default(400),
 
   MUJEEB_SCHEDULING_PROVIDER: z.enum(['none', 'memory', 'medplum']).default('memory'),
@@ -111,6 +113,7 @@ export interface Settings {
     falseInterruptionTimeoutMs: number;
     echoTailMs: number;
     toolConfirmGraceMs: number;
+    numberHoldMs: number;
   };
   /** Appointment tools' scheduling system. `none`: no tools (the Phase 0 text-only agent). */
   scheduling: {
@@ -200,6 +203,7 @@ export function loadSettings(env: NodeJS.ProcessEnv, options?: { forceFakeProvid
       falseInterruptionTimeoutMs: e.MUJEEB_FALSE_INTERRUPTION_TIMEOUT_MS,
       echoTailMs: e.MUJEEB_ECHO_TAIL_MS,
       toolConfirmGraceMs: e.MUJEEB_TOOL_CONFIRM_GRACE_MS,
+      numberHoldMs: e.MUJEEB_NUMBER_HOLD_MS,
     },
     scheduling: {
       provider: e.MUJEEB_SCHEDULING_PROVIDER,

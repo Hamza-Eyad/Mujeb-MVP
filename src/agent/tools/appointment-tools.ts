@@ -106,6 +106,8 @@ const WEEKDAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأر�
 const PART_OF_DAY: Record<'morning' | 'afternoon' | 'evening', [number, number]> = { morning: [0, 720], afternoon: [720, 1020], evening: [1020, 1440] };
 const ACTIVE: ReadonlySet<AppointmentStatus> = new Set(['booked', 'pending']);
 const LIST_LIMIT = 10;
+/** Directory entries returned when the model lists the directory (no name to search). */
+const DIRECTORY_LIST_LIMIT = 20;
 
 /** An early, expected refusal (bad ref, invalid input, …) turned into a tool result. */
 class ToolRejection extends Error {
@@ -130,6 +132,14 @@ export class AppointmentTools {
   private readonly verification: DevIdentifierDobVerification;
   private readonly pending: PendingActions;
   private readonly ledger: WriteLedger;
+  /** Free times were offered in this call: a new patient registered after that most likely came to book one. */
+  private slotsOffered = false;
+  /**
+   * Identity details the caller already said in this call (valid, normalized). A detail the model leaves null is filled
+   * from here, so a caller is never asked again for what they said (owner, 2026-11-09). Registration reads every
+   * detail back before anything is written, so the caller can still correct a reused one.
+   */
+  private readonly said: { nationalId?: string; phone?: string; birthDate?: LocalDate } = {};
 
   constructor(options: AppointmentToolsOptions) {
     if (options.verificationPolicy !== DEV_VERIFICATION_POLICY) throw new Error(`Unsupported patient verification policy: ${String(options.verificationPolicy)}`);
@@ -275,14 +285,21 @@ export class AppointmentTools {
 
   private async searchDirectory(input: SearchClinicDirectoryInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
     const serviceId = input.service_ref !== null ? this.resolve('service', input.service_ref).id : undefined;
-    const result = await this.read(turn, (ctx) =>
-      this.o.scheduling.searchDirectory(ctx, {
-        ...(input.query !== null ? { text: input.query } : {}),
-        kind: input.kind,
-        ...(serviceId !== undefined ? { serviceId } : {}),
-        limit: this.o.maxResults,
-      }),
-    );
+    const search = (text: string | null) =>
+      this.read(turn, (ctx) =>
+        this.o.scheduling.searchDirectory(ctx, {
+          ...(text !== null ? { text } : {}),
+          kind: input.kind,
+          ...(serviceId !== undefined ? { serviceId } : {}),
+          // A listing ("which clinics do you have?") shows the whole directory; a name search stays short.
+          limit: text === null ? DIRECTORY_LIST_LIMIT : this.o.maxResults,
+        }),
+      );
+    let result = await search(input.query);
+    // Nothing matched the name (an unknown specialty, or an STT slip): show what exists instead of nothing, so the
+    // caller hears the alternatives rather than a refusal.
+    const matched = input.query === null || result.entries.length > 0;
+    if (!matched) result = await search(null);
     const results = result.entries.map((e) =>
       e.kind === 'service'
         ? { ref: this.refs.register('service', e.service), kind: 'service', name: e.service.name }
@@ -296,9 +313,17 @@ export class AppointmentTools {
     );
     return {
       status: 'ok',
+      matched,
       results,
       more: result.hasMore,
-      ...(results.length === 0 ? { hint: 'No match. Ask the caller to rephrase, or search with kind=service and no query to list services.' } : {}),
+      ...(!matched
+        ? {
+            hint:
+              "Nothing matched that name. results lists everything there is: if one fits the caller's need (a symptom, a procedure), " +
+              'use it; only if none fits, tell the caller it is not available and offer the closest.',
+          }
+        : {}),
+      ...(results.length === 0 ? { hint: 'Nothing listed. Ask the caller to rephrase.' } : {}),
     };
   }
 
@@ -325,31 +350,50 @@ export class AppointmentTools {
       ...(practitioner ? { practitionerIds: [practitioner.id] } : {}),
       ...(ignoreAppointmentId !== undefined ? { ignoreAppointmentId } : {}),
     };
-    const slots: AvailableSlot[] = [];
-    let more = false;
-    if (input.part_of_day === null) {
-      const result = await this.read(turn, (ctx) =>
-        this.o.scheduling.findAvailability(ctx, { ...base, from: this.startOf(from), to: this.startOf(addDays(to, 1)), limit: this.o.maxResults }),
-      );
-      slots.push(...result.slots);
-      more = result.hasMore;
-    } else {
+    const findIn = async (first: LocalDate, last: LocalDate): Promise<{ slots: readonly AvailableSlot[]; more: boolean }> => {
+      const found: AvailableSlot[] = [];
+      let hasMore = false;
+      if (input.part_of_day === null) {
+        const result = await this.read(turn, (ctx) =>
+          this.o.scheduling.findAvailability(ctx, { ...base, from: this.startOf(first), to: this.startOf(addDays(last, 1)), limit: this.o.maxResults }),
+        );
+        return { slots: result.slots, more: result.hasMore };
+      }
       // One window per day, so a busy morning cannot crowd out the evening the caller asked for.
       const [startMin, endMin] = PART_OF_DAY[input.part_of_day];
-      for (let day = from; daysBetween(day, to) >= 0; day = addDays(day, 1)) {
-        if (slots.length >= this.o.maxResults) {
-          more = true;
+      for (let day = first; daysBetween(day, last) >= 0; day = addDays(day, 1)) {
+        if (found.length >= this.o.maxResults) {
+          hasMore = true;
           break;
         }
         const window = { from: this.at(day, startMin), to: this.at(day, endMin) };
-        const result = await this.read(turn, (ctx) => this.o.scheduling.findAvailability(ctx, { ...base, ...window, limit: this.o.maxResults - slots.length }));
-        slots.push(...result.slots);
-        if (result.hasMore) more = true;
+        const result = await this.read(turn, (ctx) => this.o.scheduling.findAvailability(ctx, { ...base, ...window, limit: this.o.maxResults - found.length }));
+        found.push(...result.slots);
+        if (result.hasMore) hasMore = true;
+      }
+      return { slots: found, more: hasMore };
+    };
+
+    let window = { from, to };
+    let { slots, more } = await findIn(from, to);
+    // Nothing free in the asked window: look at the next one ourselves, so the caller hears the nearest free time
+    // instead of a dead end (one more search, only when the first found nothing).
+    let nearestAfterRequest = false;
+    if (slots.length === 0) {
+      const nextFrom = addDays(to, 1);
+      const nextTo = addDays(nextFrom, MAX_AVAILABILITY_WINDOW_DAYS - 1);
+      const next = await findIn(nextFrom, nextTo);
+      if (next.slots.length > 0) {
+        ({ slots, more } = next);
+        window = { from: nextFrom, to: nextTo };
+        nearestAfterRequest = true;
       }
     }
+    if (slots.length > 0) this.slotsOffered = true;
     return {
       status: 'ok',
-      window: { from, to },
+      window,
+      ...(nearestAfterRequest ? { nearest_after_request: true, requested_window: { from, to } } : {}),
       slots: slots.map((s) => ({
         ref: this.refs.register('slot', s),
         ...this.when(s.start),
@@ -358,7 +402,10 @@ export class AppointmentTools {
         service: s.serviceName,
       })),
       more,
-      ...(slots.length === 0 ? { hint: 'No free time in this window. Offer another date range, part of day, or practitioner.' } : {}),
+      ...(nearestAfterRequest
+        ? { hint: 'Nothing was free in the requested window. These are the nearest free times after it: say so briefly, then offer them.' }
+        : {}),
+      ...(slots.length === 0 ? { hint: 'No free time in this window or the two weeks after it. Offer another practitioner or service.' } : {}),
     };
   }
 
@@ -375,36 +422,71 @@ export class AppointmentTools {
     if (input.phone !== null && phone === undefined) {
       throw new ToolRejection('invalid_phone', 'Tell the caller the digits you received (`heard`, as given) and ask for the mobile number again (10 digits starting with 05).', heardBack(phoneDigitsHeard(input.phone)));
     }
-    const missing = [...(nationalId === undefined && phone === undefined ? ['national_id_or_phone'] : []), ...(input.birth_date === null ? ['birth_date'] : [])];
-    if (missing.length > 0 || input.birth_date === null) throw missingInformation(missing);
-    const birthDate = normalizeBirthDate(input.birth_date, this.today());
-    if (birthDate === undefined) throw birthDateRejection(input.birth_date, 'Ask the caller to repeat the date of birth (day, month, year).');
+    if (nationalId !== undefined) this.said.nationalId = nationalId;
+    if (phone !== undefined) this.said.phone = phone;
+    // What the caller already said in this call fills what the model left out (e.g. the date of birth given with the
+    // ID, when the caller now gives the phone instead).
+    const reused: string[] = [];
+    let lookupId = nationalId;
+    let lookupPhone = phone;
+    if (lookupId === undefined && lookupPhone === undefined) {
+      if (this.said.nationalId !== undefined) {
+        lookupId = this.said.nationalId;
+        reused.push('national_id');
+      } else if (this.said.phone !== undefined) {
+        lookupPhone = this.said.phone;
+        reused.push('phone');
+      }
+    }
+    let rawBirthDate = input.birth_date;
+    if (rawBirthDate === null && this.said.birthDate !== undefined) {
+      rawBirthDate = this.said.birthDate;
+      reused.push('birth_date');
+    }
+    const missing = [...(lookupId === undefined && lookupPhone === undefined ? ['national_id_or_phone'] : []), ...(rawBirthDate === null ? ['birth_date'] : [])];
+    if (missing.length > 0 || rawBirthDate === null) throw missingInformation(missing);
+    const birthDate = normalizeBirthDate(rawBirthDate, this.today());
+    if (birthDate === undefined) throw birthDateRejection(rawBirthDate, 'Ask the caller to repeat the date of birth (day, month, year).');
+    this.said.birthDate = birthDate;
+    const reusedNote = reused.length > 0 ? { reused_from_earlier: reused } : {};
 
     const candidates = await this.read(turn, (ctx) =>
-      this.o.scheduling.findPatients(ctx, { ...(nationalId !== undefined ? { nationalId } : {}), ...(phone !== undefined ? { phone } : {}) }),
+      this.o.scheduling.findPatients(ctx, { ...(lookupId !== undefined ? { nationalId: lookupId } : {}), ...(lookupPhone !== undefined ? { phone: lookupPhone } : {}) }),
     );
     const outcome = this.verification.evaluate(candidates, birthDate);
-    this.log.info('patient.verification', { turn_id: turn.turnId, policy: this.verificationPolicy, outcome: outcome.status });
+    this.log.info('patient.verification', { turn_id: turn.turnId, policy: this.verificationPolicy, outcome: outcome.status, reused: reused.length });
     switch (outcome.status) {
       case 'verified':
-        return { status: 'verified', patient: { ref: this.refs.register('patient', outcome.patient), first_name: outcome.patient.firstName } };
+        // These details belong to a file now: a later registration in this call is for someone else (a child, say).
+        this.forgetSaid();
+        return { status: 'verified', patient: { ref: this.refs.register('patient', outcome.patient), first_name: outcome.patient.firstName }, ...reusedNote };
       case 'multiple':
-        return { status: 'multiple', hint: 'More than one record matches. Ask for the national ID.' };
+        return { status: 'multiple', hint: 'More than one record matches. Ask for the national ID.', ...reusedNote };
       case 'not_verified':
         // The same answer whether no record matched or the date of birth did not; `checked` is only the caller's own input.
         return {
           status: 'not_verified',
           attempts_left: outcome.attemptsLeft,
           checked: {
-            ...(phone !== undefined ? { phone: spokenDigits(localPhone(phone)) } : {}),
-            ...(nationalId !== undefined ? { national_id: spokenDigits(nationalId) } : {}),
+            ...(lookupPhone !== undefined ? { phone: spokenDigits(localPhone(lookupPhone)) } : {}),
+            ...(lookupId !== undefined ? { national_id: spokenDigits(lookupId) } : {}),
             birth_date: spokenCalendarDate(birthDate),
           },
-          hint: 'Could not verify. Read `checked` to the caller as given (what was received) and ask them to correct the part that is wrong. If they are a new patient, offer registration.',
+          ...reusedNote,
+          hint:
+            'Could not verify. Read `checked` to the caller as given (what was received) and ask them to correct the part that is wrong. ' +
+            'If they are new, offer to open a file for them (فتح ملف). When they agree, call propose_registration at once with null for anything ' +
+            'not said: the system reuses the ID, phone and date of birth already said in this call, and missing_information lists only the rest.',
         };
       case 'locked':
         return lockedOutput();
     }
+  }
+
+  private forgetSaid(): void {
+    delete this.said.nationalId;
+    delete this.said.phone;
+    delete this.said.birthDate;
   }
 
   private async listAppointments(input: ListPatientAppointmentsInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
@@ -421,17 +503,38 @@ export class AppointmentTools {
 
   private async proposeRegistration(input: ProposeRegistrationInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
     if (this.verification.locked) return lockedOutput();
-    const { full_name: fullName, national_id: rawNationalId, phone: rawPhone, birth_date: rawBirthDate } = input;
-    if (fullName === null || rawNationalId === null || rawPhone === null || rawBirthDate === null) {
-      const given = { full_name: fullName, national_id: rawNationalId, phone: rawPhone, birth_date: rawBirthDate };
-      throw missingInformation(Object.entries(given).filter(([, value]) => value === null).map(([field]) => field));
+    // Each detail the caller gives is checked and kept for this call; a detail left null is taken from what the caller
+    // already said (find_patient, an earlier attempt). Only what is still unknown is asked for.
+    if (input.national_id !== null) {
+      const given = normalizeNationalId(input.national_id);
+      if (given === undefined) throw new ToolRejection('invalid_national_id', 'Ask the caller to repeat the 10-digit national ID.');
+      this.said.nationalId = given;
     }
-    const nationalId = normalizeNationalId(rawNationalId);
-    if (nationalId === undefined) throw new ToolRejection('invalid_national_id', 'Ask the caller to repeat the 10-digit national ID.');
-    const phone = normalizePhone(rawPhone);
-    if (phone === undefined) throw new ToolRejection('invalid_phone', 'Ask the caller to repeat the mobile number.');
-    const birthDate = normalizeBirthDate(rawBirthDate, this.today());
-    if (birthDate === undefined) throw birthDateRejection(rawBirthDate, 'Ask the caller to repeat the date of birth.');
+    if (input.phone !== null) {
+      const given = normalizePhone(input.phone);
+      if (given === undefined) throw new ToolRejection('invalid_phone', 'Ask the caller to repeat the mobile number.');
+      this.said.phone = given;
+    }
+    if (input.birth_date !== null) {
+      const given = normalizeBirthDate(input.birth_date, this.today());
+      if (given === undefined) throw birthDateRejection(input.birth_date, 'Ask the caller to repeat the date of birth.');
+      this.said.birthDate = given;
+    }
+    const fullName = input.full_name !== null && input.full_name.trim() !== '' ? input.full_name : null;
+    const { nationalId, phone, birthDate } = this.said;
+    const missing = [
+      ...(fullName === null ? ['full_name'] : []),
+      ...(nationalId === undefined ? ['national_id'] : []),
+      ...(phone === undefined ? ['phone'] : []),
+      ...(birthDate === undefined ? ['birth_date'] : []),
+    ];
+    if (fullName === null || nationalId === undefined || phone === undefined || birthDate === undefined) {
+      throw new ToolRejection(
+        'missing_information',
+        'Ask the caller only for these, together in one short question (and their gender, if not said). Everything else they already said is kept. Never guess.',
+        { missing },
+      );
+    }
     const gender = input.gender ?? 'unknown';
     const target: ActionTarget = { kind: 'registration', patient: { fullName: fullName.trim(), nationalId, phone, birthDate, gender } };
     await this.ensureNoUnresolvedWrite(actionPatientKey(target));
@@ -631,7 +734,11 @@ export class AppointmentTools {
     if (target.kind === 'registration') {
       const patient = result as PatientRecord;
       this.verification.markRegistered(patient);
-      const speech = `تم فتح الملف باسم ${patient.fullName}. تبي أخدمك بشي ثاني؟`;
+      this.forgetSaid();
+      // The turn ends on these words (authoritative speech), so the booking the caller came for continues in their
+      // next turn: ask to continue it when times were already offered, instead of a generic "anything else?".
+      const next = this.slotsOffered ? 'أكمل لك حجز الموعد؟' : 'تبي أخدمك بشي ثاني؟';
+      const speech = `تم فتح الملف باسم ${patient.fullName}. ${next}`;
       return { status: 'done', patient: { ref: this.refs.register('patient', patient), first_name: patient.firstName }, spoken: speech, hint, [SPEAK]: speech };
     }
     const appointment = result as AppointmentRecord;

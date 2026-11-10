@@ -16,6 +16,7 @@ import type { TextToSpeech, TtsSession } from '../ports/text-to-speech.js';
 import { normalizeArabic } from './arabic-text.js';
 import { type BargeInDecision, type BargeInPolicy, evaluateBargeIn, isEchoOf } from './barge-in-policy.js';
 import { EnergyVad, type EnergyVadOptions } from './energy-vad.js';
+import { endsWithNumber } from './number-hold.js';
 import { CHUNK_FLUSH, type ChunkerOptions, chunkText } from './text-chunker.js';
 
 /**
@@ -84,6 +85,11 @@ export interface VoiceSessionConfig {
   bargeIn: BargeInPolicy;
   vad: EnergyVadOptions;
   logTranscripts: boolean;
+  /**
+   * Extra wait before answering when the caller's words end with a number (a dictated ID, phone or date usually
+   * continues after a pause). Speech in the meantime merges into the same turn. 0 = off.
+   */
+  numberHoldMs: number;
 }
 
 export interface VoiceSessionDeps {
@@ -190,6 +196,8 @@ export class VoiceSession {
   private carryOverUserText = '';
   /** Caller-turn number of the carried-over text: a continued utterance is still the same turn for confirmations. */
   private carryOverUserTurn: number | undefined;
+  /** Waiting for the rest of a dictated number before answering (startOrHoldUserTurn). */
+  private numberHoldTimer: NodeJS.Timeout | undefined;
   private userTurnCounter = 0;
   /** The latest tool-using turn; its writes may still be finishing after the turn ended. */
   private lastAgentRun: AgentRun | null = null;
@@ -544,6 +552,7 @@ export class VoiceSession {
       this.cancelTurn(turn, 'user_continued'); // the user is still talking — wait for their full utterance
       return;
     }
+    this.clearNumberHold(); // the caller is still dictating: the next commit completes the number
     this.emit({ type: 'user_partial', text });
     this.ensurePending().mark('stt_first_partial');
   }
@@ -555,7 +564,7 @@ export class VoiceSession {
         turn.heard = undefined; // the STT utterance ended without words
         return;
       }
-      if (this.handleSpeakingTranscript(turn, text, true)) this.startUserTurn(text);
+      if (this.handleSpeakingTranscript(turn, text, true)) this.startOrHoldUserTurn(text);
       return;
     }
     if (turn && this.state === 'thinking') {
@@ -566,11 +575,11 @@ export class VoiceSession {
         return;
       }
       this.cancelTurn(turn, 'user_continued');
-      this.startUserTurn(text);
+      this.startOrHoldUserTurn(text);
       return;
     }
     if (text === '') {
-      if (this.carryOverUserText !== '') this.startUserTurn('');
+      if (this.carryOverUserText !== '' && this.numberHoldTimer === undefined) this.startUserTurn('');
       return;
     }
     if (this.withinEchoTail() && isEchoOf(text, this.lastAssistantText, this.cfg.bargeIn)) {
@@ -580,7 +589,31 @@ export class VoiceSession {
       this.emitCounters();
       return;
     }
-    this.startUserTurn(text);
+    this.startOrHoldUserTurn(text);
+  }
+
+  /**
+   * Starts the user turn, unless the caller's words so far end with a number: then waits `numberHoldMs` for the rest
+   * of a dictated ID, phone or date. Speech in the meantime clears the wait, and its commit merges into this turn.
+   */
+  private startOrHoldUserTurn(text: string): void {
+    this.clearNumberHold();
+    const soFar = [this.carryOverUserText, text].filter((part) => part.trim() !== '').join(' ').trim();
+    if (this.cfg.numberHoldMs <= 0 || !endsWithNumber(soFar)) {
+      this.startUserTurn(text);
+      return;
+    }
+    this.carryOverUserText = soFar;
+    this.log.info('turn.number_hold', { ms: this.cfg.numberHoldMs });
+    this.numberHoldTimer = this.setTimer(() => {
+      this.numberHoldTimer = undefined;
+      if (this.state !== 'closed') this.startUserTurn('');
+    }, this.cfg.numberHoldMs);
+  }
+
+  private clearNumberHold(): void {
+    this.clearTimer(this.numberHoldTimer);
+    this.numberHoldTimer = undefined;
   }
 
   // ───────────────────────────── barge-in ─────────────────────────────

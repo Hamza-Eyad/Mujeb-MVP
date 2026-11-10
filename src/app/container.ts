@@ -149,6 +149,7 @@ export function buildSessionConfig(s: Settings): VoiceSessionConfig {
     bargeIn: DEFAULT_BARGE_IN_POLICY,
     vad: DEFAULT_ENERGY_VAD_OPTIONS,
     logTranscripts: s.log.transcripts,
+    numberHoldMs: s.voice.numberHoldMs,
   };
 }
 

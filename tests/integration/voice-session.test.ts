@@ -403,6 +403,35 @@ describe('VoiceSession — turn taking', () => {
     expect(summaries(h)[0]).toMatchObject({ outcome: 'cancelled', reason: 'user_continued' });
   });
 
+  it('waits for the rest of a number dictated in groups, then answers the whole of it once', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { numberHoldMs: 300 } }));
+    await h.session.start();
+    h.sttStream.commit('رقم جوالي 0505');
+    expect(h.session.currentState).toBe('listening'); // no reply on half a number
+    await delay(150);
+    h.sttStream.partial('430'); // the caller goes on: the wait is cleared until their next commit
+    await delay(400);
+    expect(llm.calls.length).toBe(0);
+    h.sttStream.commit('430 5530');
+    await waitFor(() => llm.calls.length === 1, 2000, 'one request for the whole number');
+    expect(llm.calls[0]?.messages.at(-1)?.text).toBe('رقم جوالي 0505 430 5530');
+    await waitFor(() => summaries(h).length === 1, 5000);
+    expect(h.session.history().filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['رقم جوالي 0505 430 5530']);
+  });
+
+  it('answers at once when the words do not end with a number, and after the wait when the number is complete', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { numberHoldMs: 300 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي موعد اسنان');
+    expect(h.session.currentState).toBe('thinking');
+    await waitFor(() => summaries(h).length === 1, 5000);
+    h.sttStream.commit('تاريخ ميلادي خمسة نوفمبر الف وتسعمية واربعة وستين');
+    expect(h.session.currentState).toBe('listening');
+    await waitFor(() => llm.calls.length === 2, 2000, 'answered after the wait');
+  });
+
   it('half-duplex sends silence to STT while speaking', async () => {
     const h = track(createHarness({ config: { duplexMode: 'half' }, tts: { realtimeFactor: 0.3 } }));
     await h.session.start();

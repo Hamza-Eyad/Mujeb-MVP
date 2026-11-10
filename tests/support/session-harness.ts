@@ -27,6 +27,7 @@ export const TEST_CONFIG: VoiceSessionConfig = {
   bargeIn: DEFAULT_BARGE_IN_POLICY,
   vad: DEFAULT_ENERGY_VAD_OPTIONS,
   logTranscripts: false,
+  numberHoldMs: 0,
 };
 
 export interface HarnessOptions {
