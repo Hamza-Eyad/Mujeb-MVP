@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Lab only: Asterisk config for a local softphone (MicroSIP) calling Mujeeb (run as root inside WSL).
 # This is a local test bench, not a carrier connection: SIP listens on 127.0.0.1 only, there is one
-# softphone account (6001), and no outbound route exists.
+# softphone account (6001), and no outbound route exists. The optional demo trunk (MUJEEB_LAB_TRUNK below)
+# adds a temporary inbound-only registration to a carrier's trial number; it is off by default.
 #
 # Extensions:
 #   100 -> hello-world + Echo()   (call path and audio check, no Mujeeb)
@@ -21,15 +22,53 @@
 #   MUJEEB_LAB_RECORD=1   record calls to 300 under /var/spool/asterisk/monitor (lab diagnosis only;
 #                         synthetic data only). Run again without it to turn recording off.
 #   ASTERISK_CONF_DIR=dir write the files to another directory (to review them without touching the lab).
+#   MUJEEB_LAB_TRUNK=off|echo|mujeeb
+#                         a carrier's demo trunk (plans/2026-11-09-exacall-demo-lab-trunk.md). Temporary: off (the
+#                         default) writes exactly the lab without it. echo = a prompt, then the caller's own voice back;
+#                         mujeeb = Mujeeb's gateway, the DID exactly as received as the route key. Inbound only.
+#                         The trunk's values come from $CONF/lab-trunk.env (root-only, never in the repository):
+#                           TRUNK_HOST=  TRUNK_PORT=  TRUNK_USERNAME=  TRUNK_PASSWORD=  TRUNK_PUBLIC_IP= (optional)
+#                         The file is not sourced: only those keys are read. After turning it on or off, restart
+#                         Asterisk (core restart now): a reload does not add or remove a transport.
 # Safe to run again: config files are rewritten, existing secrets are kept.
 set -euo pipefail
 CONF="${ASTERISK_CONF_DIR:-/etc/asterisk}"
 RECORD="${MUJEEB_LAB_RECORD:-0}"
+TRUNK="${MUJEEB_LAB_TRUNK:-off}"
+TRUNK_FILE="$CONF/lab-trunk.env"
 PROMPT="$(cd "$(dirname "$0")" && pwd)/sounds/unavailable.sln16"
+fail() { echo "$*" >&2; exit 1; }
+case "$TRUNK" in off|echo|mujeeb) ;; *) fail "MUJEEB_LAB_TRUNK must be off, echo or mujeeb (is '$TRUNK')." ;; esac
+# Recording is for synthetic lab calls only: calls through the trunk come from real phones.
+[ "$TRUNK" = off ] || [ "$RECORD" != "1" ] || fail "MUJEEB_LAB_RECORD=1 is refused while the trunk is on."
 mkdir -p "$CONF"
 if [ ! -s "$PROMPT" ]; then
   echo "Missing $PROMPT: render it first (npm run lab:render-unavailable)." >&2
   exit 1
+fi
+
+if [ "$TRUNK" != off ]; then
+  [ -r "$TRUNK_FILE" ] || fail "Missing $TRUNK_FILE (TRUNK_HOST, TRUNK_PORT, TRUNK_USERNAME, TRUNK_PASSWORD lines)."
+  chmod 600 "$TRUNK_FILE"
+  trunk_value() { # key: the last KEY=value line, without CR or surrounding blanks
+    sed -n "s/^$1=//p" "$TRUNK_FILE" | tail -1 | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+  }
+  TRUNK_HOST="$(trunk_value TRUNK_HOST)"
+  TRUNK_PORT="$(trunk_value TRUNK_PORT)"
+  TRUNK_PORT="${TRUNK_PORT:-5060}"
+  TRUNK_USERNAME="$(trunk_value TRUNK_USERNAME)"
+  TRUNK_PASSWORD="$(trunk_value TRUNK_PASSWORD)"
+  TRUNK_PUBLIC_IP="$(trunk_value TRUNK_PUBLIC_IP)"
+  [[ $TRUNK_HOST =~ ^[A-Za-z0-9.-]+$ ]] || fail "TRUNK_HOST must be a host name or an IPv4 address."
+  [[ $TRUNK_PORT =~ ^[0-9]{1,5}$ ]] && [ "$TRUNK_PORT" -ge 1 ] && [ "$TRUNK_PORT" -le 65535 ] \
+    || fail "TRUNK_PORT is not a port number."
+  [[ $TRUNK_USERNAME =~ ^[A-Za-z0-9._+-]+$ ]] || fail "TRUNK_USERNAME: letters, digits, . _ + - only."
+  [ -n "$TRUNK_PASSWORD" ] || fail "TRUNK_PASSWORD is empty."
+  if [ -n "$TRUNK_PUBLIC_IP" ]; then
+    [[ $TRUNK_PUBLIC_IP =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || fail "TRUNK_PUBLIC_IP must be an IPv4 address."
+  fi
+  # ';' starts a comment in Asterisk's config files: escape it.
+  TRUNK_PASSWORD_CONF="${TRUNK_PASSWORD//;/\\;}"
 fi
 
 secret() { # file, bytes
@@ -52,13 +91,27 @@ cat > "$CONF/modules.conf" <<'EOF'
 autoload = yes
 EOF
 
-cat > "$CONF/logger.conf" <<'EOF'
+if [ "$TRUNK" = off ]; then
+  cat > "$CONF/logger.conf" <<'EOF'
 [general]
 dateformat = %F %T.%3q
 
 [logfiles]
 full => notice,warning,error,verbose(3),dtmf
 EOF
+else
+  # Trunk on: real callers' numbers reach the dialplan (verbose) and res_pjsip's notices. The file keeps warnings
+  # and errors only, which carry no number; the rest goes to remote consoles (sudo asterisk -rvvv) only.
+  cat > "$CONF/logger.conf" <<'EOF'
+[general]
+dateformat = %F %T.%3q
+queue_log = no
+
+[logfiles]
+messages => warning,error
+console => notice,warning,error,verbose
+EOF
+fi
 
 cat > "$CONF/rtp.conf" <<'EOF'
 [general]
@@ -66,7 +119,8 @@ rtpstart = 10000
 rtpend = 10100
 EOF
 
-private_file "$CONF/pjsip.conf" <<EOF
+{
+  cat <<EOF
 ; Lab only. Loopback transport: nothing outside this PC can reach it.
 [transport-udp]
 type = transport
@@ -99,6 +153,85 @@ type = aor
 max_contacts = 1
 remove_existing = yes
 EOF
+  if [ "$TRUNK" != off ]; then
+    cat <<EOF
+
+; -- Demo trunk (MUJEEB_LAB_TRUNK, plans/2026-11-09-exacall-demo-lab-trunk.md). Temporary, lab only. --
+; Values from lab-trunk.env, never from the repository. Inbound only: no dialplan dials out through it.
+; Its own transport on every address: the registration and the calls go through the home router. Port 5080, not
+; 5060: Windows and Ubuntu share ports in mirrored mode, and MicroSIP holds 5060.
+[transport-trunk]
+type = transport
+protocol = udp
+bind = 0.0.0.0:5080
+EOF
+    if [ -n "$TRUNK_PUBLIC_IP" ]; then
+      cat <<EOF
+; TRUNK_PUBLIC_IP: advertise the home's public address in SIP and SDP (only if calls or audio do not arrive).
+external_signaling_address = ${TRUNK_PUBLIC_IP}
+external_media_address = ${TRUNK_PUBLIC_IP}
+local_net = 10.0.0.0/8
+local_net = 172.16.0.0/12
+local_net = 192.168.0.0/16
+local_net = 127.0.0.0/8
+EOF
+    fi
+    cat <<EOF
+
+[exacall]
+type = endpoint
+transport = transport-trunk
+context = from-trunk
+disallow = all
+allow = g722,alaw,ulaw
+direct_media = no
+rtp_symmetric = yes
+force_rport = yes
+rewrite_contact = yes
+trust_id_inbound = yes
+send_pai = no
+send_rpid = no
+dtmf_mode = rfc4733
+media_encryption = no
+outbound_auth = exacall-auth
+aors = exacall
+
+[exacall]
+type = aor
+contact = sip:${TRUNK_HOST}:${TRUNK_PORT}
+; OPTIONS every 25 s keep the router's NAT mapping open, as MicroSIP's keep-alive does. A carrier that ignores
+; OPTIONS shows Unavailable; inbound calls are not affected.
+qualify_frequency = 25
+
+; Inbound calls are identified by the registration's line parameter, or else by the carrier's address
+; (the host name is resolved once, when this file loads).
+[exacall]
+type = identify
+endpoint = exacall
+match = ${TRUNK_HOST}
+
+[exacall-auth]
+type = auth
+auth_type = userpass
+username = ${TRUNK_USERNAME}
+password = ${TRUNK_PASSWORD_CONF}
+
+; A 401/403 stops the retries (the default): a wrong password must not keep knocking on the carrier.
+[exacall-registration]
+type = registration
+transport = transport-trunk
+outbound_auth = exacall-auth
+server_uri = sip:${TRUNK_HOST}:${TRUNK_PORT}
+client_uri = sip:${TRUNK_USERNAME}@${TRUNK_HOST}
+contact_user = ${TRUNK_USERNAME}
+expiration = 300
+retry_interval = 60
+max_retries = 10000
+line = yes
+endpoint = exacall
+EOF
+  fi
+} | private_file "$CONF/pjsip.conf"
 
 # One WebSocket per call to Mujeeb (per_call_config). username/password arrive as HTTP Basic auth and must
 # match MUJEEB_TELEPHONY_USERNAME / MUJEEB_TELEPHONY_PASSWORD; the port is MUJEEB_TELEPHONY_PORT.
@@ -194,6 +327,31 @@ exten => _talk-X.,1,Set(TALK_SECONDS=${CUT(EXTEN,-,2)})
  same => n,GotoIf($[${EPOCH} < ${TALK_END}]?loop)
  same => n,Hangup()
 EOF
+  if [ "$TRUNK" != off ]; then
+    if [ "$TRUNK" = echo ]; then HANDLER='Goto(trunk-echo,s,1)'; else HANDLER='Gosub(mujeeb-call,s,1(${EXTEN}))'; fi
+    cat <<'EOF'
+
+; -- Demo trunk (MUJEEB_LAB_TRUNK). Temporary, lab only. --
+; Calls from the carrier (endpoint exacall). The DID is ${EXTEN} exactly as received: for a registration trunk,
+; usually the account name. Mujeeb's routes file decides; an unknown DID hears the apology. The Verbose line shows
+; what arrived (on remote consoles only: logger.conf keeps no verbose in a file while the trunk is on).
+[from-trunk]
+EOF
+    for pattern in '_[0-9a-zA-Z+].' s; do
+      printf 'exten => %s,1,Verbose(1,trunk: exten=${EXTEN} to=${PJSIP_HEADER(read,To)})\n' "$pattern"
+      printf ' same => n,%s\n same => n,Hangup()\n' "$HANDLER"
+    done
+    cat <<'EOF'
+exten => i,1,Hangup()
+
+; The line without Mujeeb: a prompt, then the caller's own voice back.
+[trunk-echo]
+exten => s,1,Answer()
+ same => n,Playback(hello-world)
+ same => n,Echo()
+ same => n,Hangup()
+EOF
+  fi
 } > "$CONF/extensions.conf"
 
 if [ "$CONF" = "/etc/asterisk" ]; then
@@ -201,6 +359,9 @@ if [ "$CONF" = "/etc/asterisk" ]; then
   install -m 644 "$PROMPT" /var/lib/asterisk/sounds/mujeeb/unavailable.sln16
   : > /var/log/asterisk/full
 fi
-echo "CONFIG_OK ($CONF, recording: $([ "$RECORD" = "1" ] && echo on || echo off))"
+echo "CONFIG_OK ($CONF, recording: $([ "$RECORD" = "1" ] && echo on || echo off), trunk: $TRUNK)"
+if [ "$TRUNK" != off ]; then
+  echo "trunk: restart Asterisk (core restart now), then: pjsip show registrations. Turn the carrier account off in MicroSIP."
+fi
 echo "softphone: server=127.0.0.1:5070 user=6001 password: sudo cat $CONF/lab-softphone-password"
 echo "Mujeeb .env: MUJEEB_TELEPHONY_PASSWORD = sudo cat $CONF/mujeeb-telephony-password"
