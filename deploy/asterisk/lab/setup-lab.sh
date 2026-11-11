@@ -309,10 +309,14 @@ EOF
   printf '%s\n' "$RECORDING_LINES"
   cat <<'EOF'
  same => n,Dial(WebSocket/mujeeb/c(slin16)f(json)n,10,g)
+; Mujeeb answered and then ended the call itself with HANGUP (cause 16): after its goodbye to a silent caller,
+; or at the maximum call length. The call is over: no apology on top of the goodbye. Anything else still hears
+; it: not answered, refused, or the connection to Mujeeb lost mid-call (chan_websocket: cause 38).
+ same => n,GotoIf($["${DIALSTATUS}" = "ANSWER" & "${HANGUPCAUSE}" = "16"]?done)
  same => n,Verbose(1,mujeeb: call not completed - dialstatus=${DIALSTATUS} hangupcause=${HANGUPCAUSE})
  same => n,Answer()
  same => n,Playback(mujeeb/unavailable)
- same => n,Hangup()
+ same => n(done),Hangup()
 
 ; Synthetic caller for lab load tests (load-calls.sh); no softphone can reach this context. The extension
 ; describes the call: talk-<seconds>-<pause> says a short phrase, stays silent <pause> seconds (1-10), and
