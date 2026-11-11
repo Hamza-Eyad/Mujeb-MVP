@@ -27,6 +27,12 @@ const STOPWORDS = new Set([
 
 const PREFIX_WEIGHT = 0.8;
 const MIN_PREFIX_CHARS = 3;
+/**
+ * One letter off (STT slips such as "الأفنان" for "الأسنان", observed live 2026-11-09): a weaker match, only for
+ * words long enough that one letter does not turn them into a different common word.
+ */
+export const FUZZY_WEIGHT = 0.6;
+const MIN_FUZZY_CHARS = 4;
 
 /** Normalized identity tokens of `text`. */
 export function searchTokens(text: string): string[] {
@@ -90,9 +96,32 @@ function tokenWeight(token: string, candidateTokens: readonly string[]): number 
     if (c === token) return 1;
     const shorter = c.length < token.length ? c : token;
     const longer = shorter === c ? token : c;
-    if (shorter.length >= MIN_PREFIX_CHARS && longer.startsWith(shorter)) weight = PREFIX_WEIGHT;
+    if (shorter.length >= MIN_PREFIX_CHARS && longer.startsWith(shorter)) weight = Math.max(weight, PREFIX_WEIGHT);
+    else if (shorter.length >= MIN_FUZZY_CHARS && longer.length - shorter.length <= 1 && withinOneEdit(token, c)) weight = Math.max(weight, FUZZY_WEIGHT);
   }
   return weight;
+}
+
+/** True when `a` becomes `b` with at most one letter replaced, inserted or removed. */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < s.length && j < l.length) {
+    if (s[i] === l[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (s.length === l.length) i += 1; // replace
+    j += 1; // replace or insert into the shorter
+  }
+  return edits + (l.length - j) + (s.length - i) <= 1;
 }
 
 function stripArticle(token: string): string {

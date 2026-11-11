@@ -8,7 +8,7 @@ import type { LanguageModel } from '../../src/ports/language-model.js';
 import type { TextToSpeech } from '../../src/ports/text-to-speech.js';
 import { DEFAULT_BARGE_IN_POLICY } from '../../src/voice/barge-in-policy.js';
 import { DEFAULT_ENERGY_VAD_OPTIONS } from '../../src/voice/energy-vad.js';
-import { type SessionEvent, VoiceSession, type VoiceSessionConfig } from '../../src/voice/session.js';
+import { type PhoneCallOptions, type SessionEvent, VoiceSession, type VoiceSessionConfig } from '../../src/voice/session.js';
 import { DEFAULT_CHUNKER_OPTIONS } from '../../src/voice/text-chunker.js';
 import { FakeTransport } from './fake-transport.js';
 
@@ -27,6 +27,10 @@ export const TEST_CONFIG: VoiceSessionConfig = {
   bargeIn: DEFAULT_BARGE_IN_POLICY,
   vad: DEFAULT_ENERGY_VAD_OPTIONS,
   logTranscripts: false,
+  numberHoldMs: 0,
+  stalePartialCommitMs: 0,
+  // Off unless a test gives the session `phone` options and shorter timings.
+  callEnding: { silencePromptMs: 0, silenceHangupMs: 1000, maxCallMs: 0, maxCallTurnGraceMs: 1000 },
 };
 
 export interface HarnessOptions {
@@ -40,7 +44,9 @@ export interface HarnessOptions {
   sessionId?: string;
   /** Enables the tool-using path. */
   tools?: AgentToolbox;
-  agent?: { maxToolRounds?: number; toolMutationGraceMs?: number; toolDrainTimeoutMs?: number; toolWaitPhrase?: string };
+  agent?: { maxToolRounds?: number; toolMutationGraceMs?: number; toolDrainTimeoutMs?: number; toolWaitPhrases?: readonly string[] };
+  /** A phone call: silence handling and the maximum call length (with `config.callEnding`). */
+  phone?: PhoneCallOptions;
   /** The session's clock (default performance.now). With fake timers, pass `() => Date.now()`. */
   now?: () => number;
 }
@@ -66,6 +72,7 @@ export function createHarness(options: HarnessOptions = {}) {
     observer: (event) => events.push(event),
     ...(options.tools ? { tools: options.tools } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.phone ? { phone: options.phone } : {}),
   });
   return {
     session,

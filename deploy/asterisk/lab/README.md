@@ -1,6 +1,9 @@
 # مختبر الهاتف المحلي: MicroSIP ← Asterisk ← مُجيب
 
-> **مختبر محلي على جهاز التطوير فقط، وليس ربطًا تجاريًا.** لا يوجد فيه خط ExaCall ولا رقم حقيقي ولا خادم Oracle، والـSIP مربوط على `127.0.0.1` فقط. القرار: `docs/DECISIONS.md` A19. الخطة: `plans/2026-10-25-phase-4-call-connection.md`.
+> **مختبر محلي على جهاز التطوير فقط، وليس ربطًا تجاريًا.**
+> - لا يوجد فيه خادم Oracle، والـSIP مربوط على `127.0.0.1` فقط.
+> - الاستثناء الوحيد خط تجريبي مؤقت من مزود (القسم «خط تجريبي من مزود» أدناه)، وهو مطفي افتراضيًا.
+> - القرار: `docs/DECISIONS.md` A19. الخطة: `plans/2026-10-25-phase-4-call-connection.md`.
 
 ```text
 MicroSIP (Windows) --SIP/RTP 127.0.0.1:5070--> Asterisk 22.11.0 (WSL Ubuntu 24.04)
@@ -12,7 +15,7 @@ MicroSIP (Windows) --SIP/RTP 127.0.0.1:5070--> Asterisk 22.11.0 (WSL Ubuntu 24.0
 | الملف | الغرض |
 |---|---|
 | `build-asterisk.sh` | بناء Asterisk ‏22.11.0 من المصدر. الإصدار والـchecksum ثابتان، والبناء يفشل لو الملف مختلف |
-| `setup-lab.sh` | كتابة إعدادات `/etc/asterisk` كاملة، وتوليد كلمات السر خارج المستودع، وتثبيت رسالة الاعتذار |
+| `setup-lab.sh` | كتابة إعدادات `/etc/asterisk` كاملة، وتوليد كلمات السر خارج المستودع، وتثبيت رسالة الاعتذار. وفيه خط تجريبي اختياري (`MUJEEB_LAB_TRUNK`) |
 | `load-calls.sh` | يبدأ عدة مكالمات اصطناعية في نفس اللحظة، لاختبارات الحمل (القسم أدناه) |
 | `sounds/unavailable.txt` | نص رسالة الاعتذار المعتمد |
 | `sounds/unavailable.sln16` | الرسالة بصوت العيادة، PCM ‏16 kHz. تُولَّد مرة واحدة بـ`npm.cmd run lab:render-unavailable` (طلب ElevenLabs واحد)، وليس عند كل مكالمة |
@@ -89,7 +92,11 @@ npm.cmd run telephony:fake   # مزودون وهميون، بدون مفاتيح
     - وخطأ مصادقة قبل التأكيد ينهي المحاولة فورًا.
     - مُجيب ما يرد أصلًا، فالمتصل يسمع الرنين ثم الرسالة (`NOANSWER/16`)، بدون صمت بعد الرد.
   - لم يرد خلال 10 ثوانٍ.
-  - انتهت جهته بعد الرد لأي سبب.
+  - انقطع الاتصال بمُجيب بعد الرد، مثل تعطّل العملية. `chan_websocket` يرجع السبب 38.
+- **ما تُشغَّل** إذا رد مُجيب ثم أنهى المكالمة بنفسه بأمر `HANGUP`، والسبب 16:
+  - بعد جملة الوداع لمتصل ساكت.
+  - عند الحد الأقصى لمدة المكالمة.
+  - **انتبه:** إنهاء مُجيب للمكالمة بسبب عطل بعد الرد يمر بنفس الطريق، فلا يسمع المتصل رسالة الاعتذار. مثال: الـSTT ما رجع بعد محاولات إعادة الاتصال.
 - **لا تُشغَّل:** إذا قفل المتصل، أو إذا أُقفلت قناة المتصل نفسها (الإنهاء الطبيعي مستقبلًا يكون بهذه الطريقة، عبر التحكم بالمكالمة).
 - **السبب:** بعد الرد، كل طرق انتهاء جهة مُجيب تظهر للـdialplan بنفس القيم (`DIALSTATUS=ANSWER` و`HANGUPCAUSE=16`)، فلا يمكن التمييز بينها. القياسات في `plans/2026-10-28-phase-4-step-2-lab.md` (البند 3).
 - في سجل Asterisk يظهر السطر `mujeeb: call not completed` ومعه `DIALSTATUS` و`HANGUPCAUSE`.
@@ -118,6 +125,86 @@ sudo asterisk -rx 'dialplan reload'
 - **للمختبر فقط وببيانات وهمية فقط.** التسجيلات لا تُنسخ إلى المستودع.
 - للإيقاف: شغّل `setup-lab.sh` بدون المتغير، ثم `dialplan reload`.
 
+## خط تجريبي من مزود (مؤقت، مطفي افتراضيًا)
+
+> لتجربة رقم تجريبي من مزود لأيام قليلة، بطريقة Registered، **وليس إعداد إنتاج.**
+> - لا توجد أي قيمة للخط في المستودع.
+> - بدون `MUJEEB_LAB_TRUNK` يكتب `setup-lab.sh` المختبر كما كان حرفيًا.
+> - الخطة: `plans/2026-11-09-exacall-demo-lab-trunk.md`.
+
+```text
+جوال --> رقم المزود --> SBC المزود <==REGISTER== Asterisk (WSL, 0.0.0.0:5080) --WebSocket--> مُجيب
+```
+
+- الخط **وارد فقط**: لا يوجد أي Dial خارج.
+- يُعرف بالمكالمة من باراميتر `line` الخاص بالتسجيل، أو من عنوان المزود. وأي مكالمة غيرها تُرفض بـ401.
+- حساب MicroSIP ‏(6001) والامتدادات 100 و300 تبقى كما هي.
+
+### التجهيز (مرة لكل رقم)
+
+1. **ملف بيانات الخط:** تكتبه بنفسك. يكون لـroot فقط، ولا يدخل المستودع:
+   ```bash
+   sudo sh -c 'umask 077 && touch /etc/asterisk/lab-trunk.env'
+   sudo nano /etc/asterisk/lab-trunk.env
+   ```
+   ```dotenv
+   TRUNK_HOST=<SIP server من إيميل المزود>
+   TRUNK_PORT=<SIP port>
+   TRUNK_USERNAME=<username>
+   TRUNK_PASSWORD=<password>
+   # فقط إذا لم تصل المكالمة أو صار الصوت باتجاه واحد:
+   # TRUNK_PUBLIC_IP=<عنوان البيت العام>
+   ```
+   - السكربت لا ينفّذ الملف، يقرأ هذه المفاتيح فقط.
+   - يُسمح بالرمز `;` في كلمة السر.
+2. **في MicroSIP:** عطّل حساب المزود وارجع لحساب Lab، حتى لا يكون هناك جهازان مسجّلان على نفس الحساب.
+3. **التشغيل:**
+   ```bash
+   sudo env MUJEEB_LAB_TRUNK=echo bash /mnt/c/Users/<user>/Desktop/Mujeb-MVP/deploy/asterisk/lab/setup-lab.sh
+   sudo asterisk                        # وإذا كان يعمل: sudo asterisk -rx 'core restart now' (transport جديد)
+   sudo asterisk -rvvv
+   ```
+   في الكونسول، `pjsip show registrations` يجب أن يظهر `Registered`.
+
+### البوابات بالترتيب
+
+1. **`MUJEEB_LAB_TRUNK=echo`:** اتصل من جوالك على الرقم. تسمع hello-world ثم صدى صوتك.
+   - في الكونسول يظهر سطر `trunk: exten=... to=...`. وقيمة `exten` هي مفتاح الـroute.
+   - أثناء المكالمة: `core show channels verbose` (الكودك) و`pjsip show channelstats` (RTP في الاتجاهين).
+2. **`MUJEEB_LAB_TRUNK=mujeeb` مع `npm.cmd run telephony:fake`:**
+   - **ملف routes محلي:** `config/telephony/routes.local.json`، وهو مستبعد من git. المفتاح فيه هو `exten` من البوابة 1:
+     ```json
+     { "routes": [ { "key": "<exten>", "agentProfile": "config/agents/demo-clinic", "note": "Demo trunk, temporary" } ] }
+     ```
+   - **وفي `.env`:** ‏`MUJEEB_TELEPHONY_ROUTES=config/telephony/routes.local.json`.
+   - **ثم:** `setup-lab.sh` بالوضع `mujeeb`، و`dialplan reload`. الـreload يكفي هنا لأن الـtransport نفسه.
+3. **المزودون الحقيقيون:** مكالمة واحدة، بعد تقدير التكلفة والموافقة.
+
+### الخصوصية
+- أثناء تشغيل الخط، ملف السجل الوحيد هو `/var/log/asterisk/messages`، وفيه warnings وerrors فقط.
+- أرقام المتصلين تظهر في الكونسول فقط.
+- التسجيل (`MUJEEB_LAB_RECORD=1`) مرفوض مع الخط.
+
+### الإيقاف والتنظيف بعد انتهاء الرقم
+
+```bash
+sudo bash /mnt/c/Users/<user>/Desktop/Mujeb-MVP/deploy/asterisk/lab/setup-lab.sh   # المختبر كما كان حرفيًا
+sudo asterisk -rx 'core restart now'
+sudo rm /etc/asterisk/lab-trunk.env
+```
+
+ثم احذف `config/telephony/routes.local.json`، وسطر `MUJEEB_TELEPHONY_ROUTES` من `.env`.
+
+### مشاكل متوقعة
+
+| العرض | السبب والحل |
+|---|---|
+| `Rejected` في `pjsip show registrations` | بيانات `lab-trunk.env`. التسجيل يتوقف بعد 401/403 حتى لا يحظرنا المزود. صحّح الملف ثم أعد `setup-lab.sh` و`core restart now` |
+| `Registered`، لكن الجوال لا يرن أو يقول «الرقم غير مستعمل» | المكالمة لم تعبر الـNAT في البيت. ضع `TRUNK_PUBLIC_IP` |
+| صوت باتجاه واحد | NAT، أو Hyper-V firewall حق WSL يحجب RTP. ضع `TRUNK_PUBLIC_IP`، وإذا لم يكفِ فالحل قاعدة firewall لمنافذ RTP ‏10000–10100 |
+| `pjsip show contacts` يظهر `Unavailable` | المزود لا يرد على OPTIONS. الـOPTIONS هنا لإبقاء الـNAT مفتوحًا فقط، ولا يؤثر على المكالمات الواردة |
+| «الرقم غير مستعمل» وAsterisk متوقف | طبيعي مع Registered: لا يوجد جهاز مسجّل |
+
 ## مشاكل معروفة
 
 | العرض | السبب والحل |
@@ -142,7 +229,7 @@ sudo asterisk -rx 'dialplan reload'
 - الأمر `Dial(WebSocket/<connection>/c(slin16)f(json)n,<مهلة>,g)`:
   - بدون رد تلقائي. مُجيب يرسل `ANSWER` بعد ما يؤكد مزود الـSTT الجلسة، لا قبل.
   - مهلة `Dial` لازم تكون أكبر من `MUJEEB_TELEPHONY_ANSWER_TIMEOUT_MS` بهامش يكفي. في المختبر 10 ث مقابل 7 ث.
-  - الرجوع من `Dial` والمتصل على الخط يعني فشلًا، فتُشغَّل رسالة الاعتذار.
+  - الرجوع من `Dial` والمتصل على الخط يعني فشلًا، فتُشغَّل رسالة الاعتذار. الاستثناء: `DIALSTATUS=ANSWER` مع `HANGUPCAUSE=16`، يعني مُجيب أنهى المكالمة بنفسه.
 - اتصال `websocket_client` بـusername/password.
 
 الأسماء معرّفة في الكود في `DIALPLAN_VARIABLES` (`src/adapters/telephony/asterisk/asterisk-ws-transport.ts`).

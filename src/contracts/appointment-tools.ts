@@ -20,9 +20,12 @@ export const searchClinicDirectoryInput = z.strictObject({
   service_ref: ref.nullable(),
 });
 
+/** A ref from an earlier result (V1, D2), or a name as the caller said it. */
+const refOrName = z.string().trim().min(1).max(80);
+
 export const searchAvailableSlotsInput = z.strictObject({
-  service_ref: ref,
-  practitioner_ref: ref.nullable(),
+  service_ref: refOrName,
+  practitioner_ref: refOrName.nullable(),
   date_from: localDate,
   date_to: localDate.nullable(),
   part_of_day: z.enum(['morning', 'afternoon', 'evening']).nullable(),
@@ -73,14 +76,20 @@ export const APPOINTMENT_TOOLS = {
   search_clinic_directory: {
     description:
       "Search the clinic's services (specialties) and practitioners by name, in Arabic or English. Use it instead of guessing names. " +
-      'kind=practitioner with service_ref lists the practitioners of that service. Returns refs for later tools.',
+      'query=null lists the whole directory (e.g. "which clinics/doctors do you have?"). ' +
+      'kind=practitioner with service_ref lists the practitioners of that service. ' +
+      'A name that matches nothing returns the whole list with matched=false. Returns refs for later tools.',
     input: searchClinicDirectoryInput,
   },
   search_available_slots: {
     description:
       'Find free appointment times for a service (optionally one practitioner) from date_from to date_to (clinic-local dates, YYYY-MM-DD). ' +
+      'service_ref: a service ref, or simply the specialty name as the caller said it (or a doctor name: that doctor specialty is used), so no ' +
+      'directory search is needed first; practitioner_ref likewise. A name resolved this way is returned as service/practitioner refs; ' +
+      'approximate=true means it was matched loosely (the STT may have misheard it): say the name found. ' +
       'part_of_day: morning (before 12:00), afternoon (12:00-17:00), evening (from 17:00). For rescheduling pass for_appointment_ref. ' +
-      'Returns at most 5 times, earliest first, as slot refs. A slot is not reserved until a booking is confirmed.',
+      'Returns at most 5 times, earliest first, as slot refs. A slot is not reserved until a booking is confirmed. ' +
+      'If nothing is free in the window, it returns the nearest free times in the two weeks after it, with nearest_after_request=true.',
     input: searchAvailableSlotsInput,
   },
   find_patient: {

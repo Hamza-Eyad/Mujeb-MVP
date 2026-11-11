@@ -9,7 +9,7 @@ import { MedplumSchedulingSystem } from '../adapters/medplum/medplum-scheduling.
 import { OpenAiResponsesModel } from '../adapters/openai/responses-model.js';
 import type { Settings } from '../config/settings.js';
 import type { AgentProfile } from '../contracts/agent-profile.js';
-import { ConfigError } from '../core/errors.js';
+import { ConfigError, errorSummary } from '../core/errors.js';
 import type { Logger } from '../core/logger.js';
 import type { LanguageModel } from '../ports/language-model.js';
 import type { SchedulingSystem } from '../ports/scheduling.js';
@@ -113,7 +113,11 @@ export async function createScheduling(s: Settings, tenantId: string, log?: Logg
       clientSecret: required(s.medplum.clientSecret, 'MEDPLUM_CLIENT_SECRET'),
       ...(log ? { log: log.child({ component: 'scheduling', provider: 'medplum' }) } : {}),
     });
-    return new MedplumSchedulingSystem({ tenantId, client, nationalIdSystem: s.medplum.nationalIdSystem, directoryTtlMs: s.medplum.directoryTtlMs });
+    const system = new MedplumSchedulingSystem({ tenantId, client, nationalIdSystem: s.medplum.nationalIdSystem, directoryTtlMs: s.medplum.directoryTtlMs });
+    // Load the clinic directory now, so the first caller does not wait for it (it is then kept warm in the background).
+    const warmup = { tenant: { tenantId, agentId: 'warmup' }, signal: AbortSignal.timeout(15_000), correlationId: 'directory-warmup' };
+    system.searchDirectory(warmup, { kind: 'service', limit: 1 }).catch((err: unknown) => log?.warn('scheduling.warmup_failed', errorSummary(err)));
+    return system;
   }
   const dataset = await loadSchedulingDataset(s.scheduling.datasetPath);
   return new MemorySchedulingSystem({ tenantId, dataset });
@@ -149,8 +153,19 @@ export function buildSessionConfig(s: Settings): VoiceSessionConfig {
     bargeIn: DEFAULT_BARGE_IN_POLICY,
     vad: DEFAULT_ENERGY_VAD_OPTIONS,
     logTranscripts: s.log.transcripts,
+    numberHoldMs: s.voice.numberHoldMs,
+    stalePartialCommitMs: s.voice.stalePartialCommitMs,
+    callEnding: {
+      silencePromptMs: s.voice.silencePromptMs,
+      silenceHangupMs: s.voice.silenceHangupMs,
+      maxCallMs: s.voice.maxCallMs,
+      maxCallTurnGraceMs: MAX_CALL_TURN_GRACE_MS,
+    },
   };
 }
+
+/** At the maximum call length, a turn under way gets this long to finish before the call is hung up anyway. */
+const MAX_CALL_TURN_GRACE_MS = 30_000;
 
 function required(value: string | undefined, name: string): string {
   if (value === undefined) throw new ConfigError(`${name} is required`);

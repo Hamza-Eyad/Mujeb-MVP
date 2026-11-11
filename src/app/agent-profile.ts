@@ -20,8 +20,17 @@ export async function loadAgentProfile(dir: string): Promise<AgentProfile> {
   const profile = { ...rest, ...(schedulingDataset !== undefined ? { schedulingDataset: resolve(root, schedulingDataset) } : {}) };
   const instructions = await readInside(root, instructionsFile, 'instructionsFile');
   if (!appointmentTools) return { ...profile, instructions };
-  const { instructionsFile: toolsFile, ...tools } = appointmentTools;
-  return { ...profile, instructions, appointmentTools: { ...tools, instructions: await readInside(root, toolsFile, 'appointmentTools.instructionsFile') } };
+  const { instructionsFile: toolsFile, waitPhrase, waitPhrases, ...tools } = appointmentTools;
+  const phrases = waitPhrases ?? (waitPhrase !== undefined ? [waitPhrase] : undefined);
+  return {
+    ...profile,
+    instructions,
+    appointmentTools: {
+      ...tools,
+      ...(phrases !== undefined ? { waitPhrases: phrases } : {}),
+      instructions: await readInside(root, toolsFile, 'appointmentTools.instructionsFile'),
+    },
+  };
 }
 
 /** Reads a non-empty text file that must stay inside the profile directory. */

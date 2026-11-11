@@ -131,6 +131,9 @@ export interface AppointmentMarkers {
   readonly tags?: readonly { readonly system: string; readonly code: string; readonly display?: string }[];
 }
 
+/** A background directory reload gives up after this long (the cached copy stays in use). */
+const DIRECTORY_RELOAD_TIMEOUT_MS = 15_000;
+
 export class MedplumSchedulingSystem implements SchedulingSystem {
   readonly name = MEDPLUM;
   /** `$book` is sent our idempotency identifier, but whether it is kept and honoured is unverified (plan step 7). */
@@ -138,6 +141,7 @@ export class MedplumSchedulingSystem implements SchedulingSystem {
 
   private readonly o: Required<MedplumSchedulingOptions>;
   private dir: Directory | undefined;
+  private reloading: Promise<void> | undefined;
 
   constructor(options: MedplumSchedulingOptions) {
     this.o = { directoryTtlMs: 300_000, maxParallelFinds: 4, now: () => new Date(), ...options };
@@ -148,7 +152,7 @@ export class MedplumSchedulingSystem implements SchedulingSystem {
   async searchDirectory(ctx: SchedulingContext, query: DirectorySearchQuery): Promise<DirectorySearchResult> {
     this.enter(ctx);
     checkLimit(query.limit);
-    let dir = await this.directory(ctx);
+    let dir = await this.directory(ctx, 'stale-ok');
     if (query.serviceId !== undefined && !dir.services.has(query.serviceId)) {
       dir = await this.directory(ctx, true);
       if (!dir.services.has(query.serviceId)) throw schedulingError('not_found', 'Service not found');
@@ -180,7 +184,7 @@ export class MedplumSchedulingSystem implements SchedulingSystem {
     if (Number.isNaN(from) || Number.isNaN(to) || from >= to) throw schedulingError('invalid_request', 'Availability window must have from < to');
     if (to - from > MAX_AVAILABILITY_WINDOW_DAYS * DAY_MS) throw schedulingError('invalid_request', `Availability window exceeds ${MAX_AVAILABILITY_WINDOW_DAYS} days`);
 
-    let dir = await this.directory(ctx);
+    let dir = await this.directory(ctx, 'stale-ok');
     if (!dir.services.has(query.serviceId)) dir = await this.directory(ctx, true);
     const service = dir.services.get(query.serviceId);
     if (!service) throw schedulingError('not_found', 'Service not found');
@@ -381,10 +385,35 @@ export class MedplumSchedulingSystem implements SchedulingSystem {
     if (ctx.signal.aborted) throw abortReason(ctx.signal);
   }
 
-  private async directory(ctx: SchedulingContext, refresh = false): Promise<Directory> {
-    if (!refresh && this.dir && this.o.now().getTime() - this.dir.loadedAt < this.o.directoryTtlMs) return this.dir;
+  /**
+   * The directory, cached for directoryTtlMs. `true` forces a reload (a ref the cache does not know). `'stale-ok'` (reads
+   * only: searches and availability) answers from an expired copy at once and reloads it in the background, so a caller
+   * never waits for the directory after a quiet spell; a missing entry still forces a reload. Writes always use a copy
+   * within its lifetime.
+   */
+  private async directory(ctx: SchedulingContext, mode: boolean | 'stale-ok' = false): Promise<Directory> {
+    const fresh = this.dir !== undefined && this.o.now().getTime() - this.dir.loadedAt < this.o.directoryTtlMs;
+    if (mode !== true && fresh && this.dir) return this.dir;
+    if (mode === 'stale-ok' && this.dir) {
+      this.reloadInBackground();
+      return this.dir;
+    }
     this.dir = await this.loadDirectory(ctx.signal);
     return this.dir;
+  }
+
+  private reloadInBackground(): void {
+    if (this.reloading) return;
+    this.reloading = this.loadDirectory(AbortSignal.timeout(DIRECTORY_RELOAD_TIMEOUT_MS))
+      .then((dir) => {
+        this.dir = dir;
+      })
+      .catch(() => {
+        // Keep the copy we have; the next read tries again.
+      })
+      .finally(() => {
+        this.reloading = undefined;
+      });
   }
 
   private async loadDirectory(signal: AbortSignal): Promise<Directory> {

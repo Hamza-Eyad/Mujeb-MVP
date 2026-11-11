@@ -9,6 +9,9 @@ logs/
 .env.*
 !.env.example
 
+# Local telephony routes for a trial line (deploy/asterisk/lab/README.md): environment-specific, never committed
+config/telephony/routes.local.json
+
 # Local credentials and keys
 *.pem
 *.key

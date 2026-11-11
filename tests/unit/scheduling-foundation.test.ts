@@ -53,6 +53,14 @@ describe('directory text matching', () => {
     expect(matchScore('', ['الجلدية'])).toBe(0);
   });
 
+  it('accepts a name one letter off as a weaker match (STT slips), but not short or unrelated words', () => {
+    expect(matchScore('عيادة الأفنان', ['الأسنان'])).toBeCloseTo(0.6); // observed live: الأسنان heard as الأفنان
+    expect(matchScore('الأسان', ['الأسنان'])).toBeCloseTo(0.6); // a letter dropped
+    expect(matchScore('سعد', ['سعيد'])).toBe(0); // too short: one letter makes another name
+    expect(matchScore('العيون', ['الأسنان'])).toBe(0);
+    expect(matchScore('القلب', ['الجلدية', 'العظام'])).toBe(0);
+  });
+
   it('ranks best first and drops weak matches', () => {
     const items = [{ name: 'خالد الشهري' }, { name: 'ريم القحطاني' }, { name: 'فهد العتيبي' }];
     const ranked = rankByText('دكتورة ريم', items, (i) => [i.name]);

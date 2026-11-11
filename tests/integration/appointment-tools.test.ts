@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { MemorySchedulingSystem } from '../../src/adapters/fakes/memory-scheduling.js';
 import { AppointmentTools, type AppointmentToolsOptions, type ToolTurnContext } from '../../src/agent/tools/appointment-tools.js';
+import { spokenCalendarDate } from '../../src/agent/tools/spoken-arabic.js';
 import { type SchedulingDataset, parseSchedulingDataset } from '../../src/contracts/scheduling-dataset.js';
 import { CancelledError, ProviderError } from '../../src/core/errors.js';
 import type { LogFields, Logger } from '../../src/core/logger.js';
@@ -389,7 +390,8 @@ describe('AppointmentTools', () => {
     for (let i = 0; i < 3; i += 1) {
       expect(await call('find_patient', { national_id: '1000000500', phone: null, birth_date: null })).toMatchObject({ status: 'missing_information', missing: ['birth_date'] });
     }
-    expect(await call('find_patient', { national_id: null, phone: null, birth_date: null })).toMatchObject({ status: 'missing_information', missing: ['national_id_or_phone', 'birth_date'] });
+    // The ID said above is kept for this call: only the date of birth is still missing.
+    expect(await call('find_patient', { national_id: null, phone: null, birth_date: null })).toMatchObject({ status: 'missing_information', missing: ['birth_date'] });
     await verify(call, { national_id: '1000000500', birth_date: '1978-01-25' }); // not locked: nothing was checked
 
     // Observed live: a birth date the caller never said was filled in as 1900-01-01.
@@ -528,6 +530,153 @@ describe('AppointmentTools', () => {
     expect((evening['slots'] as unknown[]).length).toBeGreaterThan(0);
     const clamped = await call('search_available_slots', { ...base, date_from: '2026-01-01', date_to: '2026-12-31', part_of_day: null });
     expect(clamped['window']).toEqual({ from: TODAY, to: '2026-10-24' });
+    expect(clamped).not.toHaveProperty('nearest_after_request');
+  });
+
+  it('never asks again for what the caller said: a new number reuses the date of birth (owner\'s call, 2026-11-09)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    expect(await call('find_patient', { national_id: '1122334455', phone: null, birth_date: '2002-03-15' })).toMatchObject({ status: 'not_verified' });
+    // "I gave you the ID and the date; here is my phone": the date said before is used, not asked again.
+    const byPhone = await call('find_patient', { national_id: null, phone: '0500000105', birth_date: null });
+    expect(byPhone).toMatchObject({ status: 'not_verified', reused_from_earlier: ['birth_date'] });
+    expect((byPhone['checked'] as Record<string, unknown>)['birth_date']).toBe(spokenCalendarDate('2002-03-15'));
+  });
+
+  it('verifies by national ID and date of birth even when the phone said differs from the one on file (owner call, 2026-11-09)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    // Turki's ID and date of birth, with a phone that is not his: the ID identifies the file.
+    expect(await call('find_patient', { national_id: '1000000500', phone: '0500000177', birth_date: '1978-01-25' })).toMatchObject({ status: 'verified' });
+    // A mistyped ID falls back to the phone.
+    const second = turn('');
+    expect(await second('find_patient', { national_id: '1000000599', phone: '0500000105', birth_date: '1978-01-25' })).toMatchObject({ status: 'verified' });
+  });
+
+  it('never suggests a transfer or a staff member in a tool hint (not available)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    for (let i = 0; i < 3; i += 1) await call('find_patient', { national_id: '1000000500', phone: null, birth_date: '1999-01-01' });
+    const locked = await call('find_patient', { national_id: '1000000500', phone: null, birth_date: '1978-01-25' });
+    expect(locked).toMatchObject({ status: 'locked' });
+    expect(str(locked['hint'])).toMatch(/Do not offer a transfer/);
+  });
+
+  it('opens a file asking only for what is missing: the ID and date of birth said before are reused and read back', async () => {
+    const { turn, system, ctx } = setup();
+    let call = turn('');
+    expect(await call('find_patient', { national_id: '1122334455', phone: null, birth_date: '2002-03-15' })).toMatchObject({ status: 'not_verified' });
+    call = turn('إيه افتح لي ملف');
+    // The model asks only for what the system still lacks.
+    expect(await call('propose_registration', { full_name: null, national_id: null, phone: null, birth_date: null, gender: null })).toMatchObject({
+      status: 'missing_information',
+      missing: ['full_name', 'phone'],
+    });
+    call = turn('اسمي ريان سعيد الشمري وجوالي 0500000107');
+    const proposal = await call('propose_registration', { full_name: 'ريان سعيد الشمري', national_id: null, phone: '0500000107', birth_date: null, gender: 'male' });
+    expect(proposal).toMatchObject({
+      status: 'confirmation_required',
+      read_back: { full_name: 'ريان سعيد الشمري', national_id: '1122334455', phone: '0500000107', birth_date: '2002-03-15' },
+    });
+    call = turn('إيه افتح الملف');
+    expect(await call('confirm_pending_action', { action_ref: proposal['action_ref'], caller_answer: 'yes' })).toMatchObject({ status: 'done' });
+    expect(await system.findPatients(ctx, { nationalId: '1122334455' })).toHaveLength(1);
+  });
+
+  it('after registering a caller who was offered times, asks to continue the booking instead of "anything else?"', async () => {
+    const { turn } = setup();
+    let call = turn('أبي موعد أطفال');
+    await firstSlot(call, await serviceRef(call, 'أطفال'));
+    expect(await call('find_patient', { national_id: '1000000700', phone: null, birth_date: '1999-09-09' })).toMatchObject({ status: 'not_verified' });
+    const proposal = await call('propose_registration', { full_name: 'ريان سعيد الشمري', national_id: '1000000700', phone: '0500000107', birth_date: '1999-09-09', gender: null });
+    call = turn('إيه افتح الملف');
+    const done = await call('confirm_pending_action', { action_ref: proposal['action_ref'], caller_answer: 'yes' });
+    expect(done).toMatchObject({ status: 'done', spoken: 'تم فتح الملف باسم ريان سعيد الشمري. أكمل لك حجز الموعد؟' });
+  });
+
+  it('lists the whole directory, and answers a name that matches nothing with everything there is (matched=false)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    // "Which clinics and doctors do you have?": the whole directory, beyond the 5 results a name search shows.
+    const all = await call('search_clinic_directory', { query: null, kind: 'any', service_ref: null });
+    expect(all).toMatchObject({ status: 'ok', matched: true, more: false });
+    expect((all['results'] as unknown[]).length).toBe(7); // 3 services + 4 practitioners
+    // A specialty the clinic does not have (or an STT slip): the alternatives, never an empty answer.
+    const unknown = await call('search_clinic_directory', { query: 'عيادة القلب', kind: 'service', service_ref: null });
+    expect(unknown).toMatchObject({ status: 'ok', matched: false });
+    expect((unknown['results'] as { name: string }[]).map((r) => r.name)).toEqual(['طب الأسرة', 'طب الأطفال', 'الجلدية']);
+    expect(str(unknown['hint'])).toMatch(/not available/);
+    const found = await call('search_clinic_directory', { query: 'جلدية', kind: 'service', service_ref: null });
+    expect(found).toMatchObject({ matched: true });
+    expect(found).not.toHaveProperty('hint');
+  });
+
+  it('finds free times by a specialty or doctor name in one call, without a directory search first', async () => {
+    const { turn } = setup();
+    const call = turn('أبي موعد أطفال');
+    const base = { practitioner_ref: null, date_from: TODAY, date_to: null, part_of_day: null, for_appointment_ref: null };
+    const byName = await call('search_available_slots', { ...base, service_ref: 'عيادة الأطفال' });
+    expect(byName).toMatchObject({ status: 'ok', service: { name: 'طب الأطفال' } });
+    expect((byName['slots'] as unknown[]).length).toBeGreaterThan(0);
+    expect(byName).not.toHaveProperty('approximate');
+    // A doctor by name: that doctor's specialty, only that doctor's times.
+    const byDoctor = await call('search_available_slots', { ...base, service_ref: 'الدكتورة ريم' });
+    expect(byDoctor).toMatchObject({ status: 'ok', service: { name: 'طب الأطفال' }, practitioner: { name: 'ريم القحطاني' } });
+    for (const s of byDoctor['slots'] as { doctor: string }[]) expect(s.doctor).toBe('ريم القحطاني');
+    // Specialty and doctor both by name.
+    const both = await call('search_available_slots', { ...base, service_ref: 'أطفال', practitioner_ref: 'خالد' });
+    for (const s of both['slots'] as { doctor: string }[]) expect(s.doctor).toBe('خالد الشهري');
+    // Misheard by one letter: found, flagged approximate.
+    expect(await call('search_available_slots', { ...base, service_ref: 'الأطفاك' })).toMatchObject({ status: 'ok', approximate: true, service: { name: 'طب الأطفال' } });
+    // Nothing fits, or an invented ref: refused, nothing guessed.
+    expect(await call('search_available_slots', { ...base, service_ref: 'عيادة القلب' })).toMatchObject({ status: 'service_not_found' });
+    expect(await call('search_available_slots', { ...base, service_ref: 'V9' })).toMatchObject({ status: 'unknown_ref' });
+    // The returned ref works like one from the directory.
+    const ref = str((byName['service'] as Record<string, unknown>)['ref']);
+    expect(await call('search_available_slots', { ...base, service_ref: ref })).toMatchObject({ status: 'ok' });
+  });
+
+  it('finds a specialty the STT misheard by one letter, and says the match is approximate', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    const out = await call('search_clinic_directory', { query: 'عيادة الأطفاك', kind: 'service', service_ref: null });
+    expect(out).toMatchObject({ status: 'ok', matched: true, approximate: true });
+    expect((out['results'] as { name: string }[])[0]?.name).toBe('طب الأطفال');
+    expect(str(out['hint'])).toMatch(/approximately/);
+    const exact = await call('search_clinic_directory', { query: 'جلدية', kind: 'service', service_ref: null });
+    expect(exact).not.toHaveProperty('approximate');
+  });
+
+  it('offers the nearest free times after the asked window when nothing is free in it (the only doctor on leave)', async () => {
+    const { turn } = setup();
+    const call = turn('');
+    const dermatology = await serviceRef(call, 'جلدية');
+    // The dataset's only dermatologist is on leave on days 1-3 (2026-10-12..14).
+    const out = await call('search_available_slots', {
+      service_ref: dermatology,
+      practitioner_ref: null,
+      date_from: '2026-10-12',
+      date_to: '2026-10-14',
+      part_of_day: null,
+      for_appointment_ref: null,
+    });
+    expect(out).toMatchObject({ status: 'ok', nearest_after_request: true, requested_window: { from: '2026-10-12', to: '2026-10-14' } });
+    expect(out['window']).toEqual({ from: '2026-10-15', to: '2026-10-28' });
+    const slots = out['slots'] as { date: string; spoken: string }[];
+    expect(slots.length).toBeGreaterThan(0);
+    for (const s of slots) expect(s.date >= '2026-10-15').toBe(true);
+    expect(str(out['hint'])).toMatch(/nearest free times/);
+    // The same with a part of day.
+    const evening = await call('search_available_slots', {
+      service_ref: dermatology,
+      practitioner_ref: null,
+      date_from: '2026-10-12',
+      date_to: '2026-10-14',
+      part_of_day: 'evening',
+      for_appointment_ref: null,
+    });
+    expect(evening).toMatchObject({ nearest_after_request: true });
+    for (const s of evening['slots'] as { date: string; time: string }[]) expect(s.date >= '2026-10-15' && s.time >= '17:00').toBe(true);
   });
 
   it('logs decisions without personal data', async () => {

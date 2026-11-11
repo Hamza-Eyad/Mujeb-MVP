@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { FakeLanguageModel } from '../../src/adapters/fakes/fake-llm.js';
+import { FakeSpeechToText } from '../../src/adapters/fakes/fake-stt.js';
 import { FakeTextToSpeech } from '../../src/adapters/fakes/fake-tts.js';
+import { loadAgentProfile } from '../../src/app/agent-profile.js';
+import { type AgentRuntime, createVoiceSession } from '../../src/app/session-factory.js';
 import { ProviderError } from '../../src/core/errors.js';
+import { silentLogger } from '../../src/core/logger.js';
+import { MemoryTurnSink } from '../../src/observability/turn-metrics.js';
 import type { VoiceSession } from '../../src/voice/session.js';
 import { FakeTransport } from '../support/fake-transport.js';
-import { createHarness, delay, frames, toneFrames, waitFor } from '../support/session-harness.js';
+import { TEST_CONFIG, createHarness, delay, frames, toneFrames, waitFor } from '../support/session-harness.js';
 
 const open: VoiceSession[] = [];
 function track<T extends { session: VoiceSession }>(h: T): T {
@@ -131,7 +136,7 @@ describe('VoiceSession — barge-in', () => {
     const h = track(createHarness({ tts, greeting: 'هلا والله، معك مُجيب من العيادة التجريبية، كيف أقدر أساعدك اليوم؟ عندنا عيادات كثيرة.' }));
     await h.session.start();
     await waitFor(() => h.session.currentState === 'speaking' && h.transport.audioOps(1) >= 2, 3000);
-    h.sttStream.commit('لا');
+    h.sttStream.commit('لا لحظة'); // two words: a single word during the greeting is taken for its echo
     await waitFor(() => h.session.stats.staleChunksDropped >= 1, 2000, 'stale chunk dropped');
     await delay(100);
     expect(h.transport.audioAfterClear(1)).toBe(0);
@@ -403,6 +408,35 @@ describe('VoiceSession — turn taking', () => {
     expect(summaries(h)[0]).toMatchObject({ outcome: 'cancelled', reason: 'user_continued' });
   });
 
+  it('waits for the rest of a number dictated in groups, then answers the whole of it once', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { numberHoldMs: 300 } }));
+    await h.session.start();
+    h.sttStream.commit('رقم جوالي 0505');
+    expect(h.session.currentState).toBe('listening'); // no reply on half a number
+    await delay(150);
+    h.sttStream.partial('430'); // the caller goes on: the wait is cleared until their next commit
+    await delay(400);
+    expect(llm.calls.length).toBe(0);
+    h.sttStream.commit('430 5530');
+    await waitFor(() => llm.calls.length === 1, 2000, 'one request for the whole number');
+    expect(llm.calls[0]?.messages.at(-1)?.text).toBe('رقم جوالي 0505 430 5530');
+    await waitFor(() => summaries(h).length === 1, 5000);
+    expect(h.session.history().filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['رقم جوالي 0505 430 5530']);
+  });
+
+  it('answers at once when the words do not end with a number, and after the wait when the number is complete', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { numberHoldMs: 300 } }));
+    await h.session.start();
+    h.sttStream.commit('ابي موعد اسنان');
+    expect(h.session.currentState).toBe('thinking');
+    await waitFor(() => summaries(h).length === 1, 5000);
+    h.sttStream.commit('تاريخ ميلادي خمسة نوفمبر الف وتسعمية واربعة وستين');
+    expect(h.session.currentState).toBe('listening');
+    await waitFor(() => llm.calls.length === 2, 2000, 'answered after the wait');
+  });
+
   it('half-duplex sends silence to STT while speaking', async () => {
     const h = track(createHarness({ config: { duplexMode: 'half' }, tts: { realtimeFactor: 0.3 } }));
     await h.session.start();
@@ -571,5 +605,330 @@ describe('VoiceSession — connecting before the session is heard (prepare)', ()
     await waitFor(() => summaries(h).some((t) => t.kind === 'greeting'), 3000, 'greeting');
     expect(summaries(h).find((t) => t.kind === 'greeting')?.outcome).toBe('completed');
     expect(tts.opened).toBe(1); // the failed warm-up, then one successful open
+  });
+});
+
+describe('VoiceSession — a stuck STT commit and speakerphone echo (observed live 2026-11-10)', () => {
+  const GREETING = 'هلا والله، معك مُجيب من مجمّع مُجيب الطبي. كيف أقدر أخدمك؟';
+  const lastUser = (llm: FakeLanguageModel, call: number) => llm.calls[call]?.messages.at(-1)?.text;
+
+  it('the greeting coming back misheard ("خلوا والله") does not cut the greeting short', async () => {
+    const h = track(createHarness({ greeting: GREETING, transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await h.session.start();
+    await waitFor(() => h.session.currentState === 'speaking', 3000, 'greeting playing');
+    h.sttStream.partial('خلوا والله');
+    h.sttStream.partial('خلوا والله.');
+    await waitFor(() => summaries(h).length === 1, 5000, 'greeting');
+    expect(summaries(h)[0]).toMatchObject({ kind: 'greeting', outcome: 'completed' });
+  });
+
+  it('a single word heard during the greeting is taken for its echo (observed live: "أنا" on a silent speakerphone line)', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, greeting: GREETING, transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await h.session.start();
+    await waitFor(() => h.session.currentState === 'speaking', 3000, 'greeting playing');
+    h.sttStream.partial('أنا');
+    h.sttStream.commit('أنا');
+    await waitFor(() => summaries(h).length === 1, 5000, 'greeting');
+    expect(summaries(h)[0]).toMatchObject({ kind: 'greeting', outcome: 'completed' });
+    expect(summaries(h)[0]?.barge_in?.candidates ?? 0).toBe(0); // not even a pause
+    await delay(300);
+    expect(llm.calls).toHaveLength(0);
+    expect(h.session.stats.greetingWordsIgnored).toBe(2);
+  });
+
+  it("the greeting's one-word echo is not answered when its commit comes after the greeting ended", async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, greeting: GREETING, transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await h.session.start();
+    await waitFor(() => h.session.currentState === 'speaking', 3000, 'greeting playing');
+    h.sttStream.partial('أنا'); // heard during the greeting…
+    await waitFor(() => summaries(h).length === 1, 5000, 'greeting');
+    await delay(500); // …committed well after it (past the echo tail)
+    h.sttStream.commit('أنا');
+    await delay(300);
+    expect(llm.calls).toHaveLength(0);
+    expect(h.session.currentState).toBe('listening');
+  });
+
+  it('around the greeting, two words are the caller: they interrupt and get an answer; one word later on is answered', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, greeting: GREETING, transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await h.session.start();
+    await waitFor(() => h.session.currentState === 'speaking', 3000, 'greeting playing');
+    h.sttStream.partial('ابي موعد');
+    await waitFor(() => summaries(h).length === 1, 3000, 'greeting interrupted');
+    expect(summaries(h)[0]).toMatchObject({ kind: 'greeting', outcome: 'interrupted' });
+    h.sttStream.commit('ابي موعد');
+    await waitFor(() => llm.calls.length === 1, 3000, 'answered');
+    await waitFor(() => summaries(h).length === 2, 5000);
+    await delay(400); // past the greeting's echo tail
+    h.sttStream.commit('نعم');
+    await waitFor(() => llm.calls.length === 2, 3000, 'one word, answered');
+    expect(lastUser(llm, 1)).toBe('نعم');
+  });
+
+  it('a single word before the greeting\'s audio starts does not cancel the greeting', async () => {
+    const h = track(createHarness({ greeting: GREETING, tts: { msPerChar: 25, firstAudioDelayMs: 400 } }));
+    await h.session.start();
+    expect(h.session.currentState).toBe('thinking'); // the greeting is being synthesized
+    h.sttStream.partial('أنا');
+    await waitFor(() => summaries(h).length === 1, 5000, 'greeting');
+    expect(summaries(h)[0]).toMatchObject({ kind: 'greeting', outcome: 'completed' });
+  });
+
+  it('words the STT never commits are answered once they stop changing, and its late commit is not answered twice', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { stalePartialCommitMs: 300 } }));
+    await h.session.start();
+    h.transport.feed([...frames(true, 15), ...frames(false, 40)]); // the caller speaks (the local VAD hears it)
+    const said = Date.now();
+    h.sttStream.partial('ابي موعد');
+    const hum = setInterval(() => h.sttStream.partial('ابي موعد.'), 30); // steady noise: the same partial, no commit
+    try {
+      await waitFor(() => llm.calls.length === 1, 3000, 'answered without a commit');
+      expect(Date.now() - said).toBeGreaterThanOrEqual(280);
+      expect(lastUser(llm, 0)).toBe('ابي موعد');
+      await waitFor(() => summaries(h).length === 1, 5000);
+      h.sttStream.commit('ابي موعد'); // the STT's commit finally comes: already answered
+      await delay(300);
+    } finally {
+      clearInterval(hum);
+    }
+    expect(llm.calls).toHaveLength(1);
+    expect(summaries(h).map((s) => `${s.kind}:${s.outcome}`)).toEqual(['user:completed']);
+    expect(h.session.stats.stalePartialCommits).toBe(1);
+  });
+
+  it('a late commit with more words passes on only the words past those already answered', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { stalePartialCommitMs: 200 } }));
+    await h.session.start();
+    h.transport.feed([...frames(true, 15), ...frames(false, 40)]);
+    h.sttStream.partial('ابي موعد');
+    await waitFor(() => summaries(h).length === 1, 5000, 'answered');
+    h.sttStream.commit('ابي موعد بكرة');
+    await waitFor(() => llm.calls.length === 2, 3000, 'the rest');
+    expect(lastUser(llm, 1)).toBe('بكره'); // normalized: only the new word
+  });
+
+  it('words the STT made out of a silent line are not answered (observed live: "No." with no speech on the line)', async () => {
+    const llm = new FakeLanguageModel();
+    const h = track(createHarness({ llm, config: { stalePartialCommitMs: 200 } }));
+    await h.session.start();
+    h.transport.feed(frames(false, 40)); // the line carries only quiet: the local VAD hears no speech
+    h.sttStream.partial('No.');
+    await delay(600);
+    expect(llm.calls).toHaveLength(0);
+    expect(h.session.stats.stalePartialCommits).toBe(0);
+    expect(h.session.currentState).toBe('listening');
+  });
+
+  it('nothing is answered from a partial heard while Mujeeb spoke, or with stalePartialCommitMs 0', async () => {
+    const llm = new FakeLanguageModel();
+    const speaking = track(createHarness({ llm, greeting: GREETING, config: { stalePartialCommitMs: 300 }, transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await speaking.session.start();
+    await waitFor(() => speaking.session.currentState === 'speaking', 3000, 'greeting playing');
+    speaking.sttStream.partial('هلا والله معك مجيب'); // echo, judged by the barge-in policy
+    await waitFor(() => summaries(speaking).length === 1, 5000, 'greeting');
+    await delay(500);
+    expect(llm.calls).toHaveLength(0);
+
+    const offLlm = new FakeLanguageModel();
+    const off = track(createHarness({ llm: offLlm }));
+    await off.session.start();
+    off.sttStream.partial('ابي موعد');
+    await delay(500);
+    expect(offLlm.calls).toHaveLength(0);
+  });
+});
+
+describe('VoiceSession — phone: caller silence and the maximum call length', () => {
+  const PROMPT = 'ألو؟ تسمعني؟';
+  const GOODBYE = 'يبدو إن الخط فيه مشكلة. نعتذر منك، وتقدر تتصل علينا بأي وقت. مع السلامة.';
+  const MAX_GOODBYE = 'نعتذر منك، وصلنا للحد الأقصى لمدة المكالمة. تقدر تتصل علينا مرة ثانية بأي وقت. مع السلامة.';
+  const PHONE = { silence: { promptText: PROMPT, goodbyeText: GOODBYE }, maxDurationGoodbyeText: MAX_GOODBYE };
+  const ending = (overrides: Partial<{ silencePromptMs: number; silenceHangupMs: number; maxCallMs: number; maxCallTurnGraceMs: number }>) => ({
+    callEnding: { silencePromptMs: 200, silenceHangupMs: 150, maxCallMs: 0, maxCallTurnGraceMs: 2000, ...overrides },
+  });
+  const kinds = (h: ReturnType<typeof createHarness>) => summaries(h).map((s) => `${s.kind}:${s.outcome}`);
+
+  it('checks a silent line, then says goodbye and hangs up (caller_silent)', async () => {
+    const h = track(createHarness({ greeting: 'هلا والله', phone: PHONE, config: ending({}) }));
+    await h.session.start();
+    await waitFor(() => h.session.currentState === 'closed', 5000, 'hang-up');
+    expect(kinds(h)).toEqual(['greeting:completed', 'silence_prompt:completed', 'silence_goodbye:completed']);
+    expect(h.transport.closedReason).toBe('caller_silent');
+    expect(h.session.stats.silencePrompts).toBe(1);
+    expect(h.session.history().map((m) => m.text)).toContain(PROMPT); // the model knows it asked
+    expect((h.llm as FakeLanguageModel).calls).toHaveLength(0); // fixed words, no model
+  });
+
+  it('a caller who answers the check keeps the call, and a later silence is checked again before any goodbye', async () => {
+    const h = track(createHarness({ phone: PHONE, config: ending({}) }));
+    await h.session.start();
+    await waitFor(() => summaries(h).some((s) => s.kind === 'silence_prompt'), 3000, 'first check');
+    h.sttStream.commit('إيه معك');
+    await waitFor(() => h.session.currentState === 'closed', 6000, 'hang-up');
+    expect(kinds(h)).toEqual(['silence_prompt:completed', 'user:completed', 'silence_prompt:completed', 'silence_goodbye:completed']);
+    expect(h.session.stats.silencePrompts).toBe(2);
+  });
+
+  it('silence means no new words: sound on the line (VAD) does not hold the clock', async () => {
+    const h = track(createHarness({ phone: PHONE, config: ending({}) }));
+    await h.session.start();
+    const started = Date.now();
+    h.transport.feed(frames(true, 15)); // sound with no words (an AC hum, a TV), and it never ends
+    await waitFor(() => h.states().includes('thinking'), 3000, 'check'); // held by the VAD, it would never come
+    expect(Date.now() - started).toBeLessThan(1500);
+    await waitFor(() => summaries(h).length === 1, 3000);
+    expect(summaries(h)[0]?.kind).toBe('silence_prompt');
+  });
+
+  it('a partial the STT keeps repeating is not speech (observed live: an AC hum on speakerphone held one partial ~30 s)', async () => {
+    const h = track(createHarness({ phone: PHONE, config: ending({}) }));
+    await h.session.start();
+    h.sttStream.partial('خلوا والله'); // the first time, these are new words…
+    const repeat = setInterval(() => h.sttStream.partial('خلوا والله.'), 30); // …then the same words over and over
+    try {
+      await waitFor(() => h.session.currentState === 'closed', 5000, 'hang-up despite the repeats');
+    } finally {
+      clearInterval(repeat);
+    }
+    // The repeats neither held the clock nor cut the check or the goodbye short.
+    expect(kinds(h)).toEqual(['silence_prompt:completed', 'silence_goodbye:completed']);
+    expect(h.transport.closedReason).toBe('caller_silent');
+    expect(h.session.stats.partialRepeatsIgnored).toBeGreaterThan(5);
+  });
+
+  it('new words hold the clock: the check comes only after the caller stops adding words', async () => {
+    const h = track(createHarness({ phone: PHONE, config: ending({ silencePromptMs: 500 }) }));
+    await h.session.start();
+    const words = ['ابي', 'موعد', 'عند', 'دكتور', 'الاسنان', 'يوم', 'الاحد', 'الصبح'];
+    let lastWord = Date.now();
+    for (let i = 1; i <= words.length; i += 1) {
+      h.sttStream.partial(words.slice(0, i).join(' ')); // a slow speaker: a new word every 100 ms, 800 ms in all
+      lastWord = Date.now();
+      await delay(100);
+    }
+    expect(summaries(h)).toEqual([]); // 800 ms of words, no check though the limit is 500 ms
+    await waitFor(() => h.states().includes('thinking'), 3000, 'check');
+    expect(Date.now() - lastWord).toBeGreaterThanOrEqual(480);
+  });
+
+  it("Mujeeb's own echo right after it spoke is not the caller", async () => {
+    const config = { echoTailMs: 1000, ...ending({ silencePromptMs: 600 }) };
+    const h = track(createHarness({ phone: PHONE, config, greeting: 'هلا والله معك مجيب من العيادة' }));
+    await h.session.start();
+    await waitFor(() => summaries(h).length === 1, 3000, 'greeting');
+    const greetingEnd = Date.now();
+    await delay(400);
+    h.sttStream.partial('هلا والله معك مجيب من العيادة'); // the greeting coming back through the speakerphone
+    await waitFor(() => h.states().filter((s) => s === 'thinking').length === 2, 3000, 'check');
+    // Counted from the greeting's end (≈600 ms), not restarted by the echo 400 ms later (≈1000 ms).
+    const elapsed = Date.now() - greetingEnd;
+    expect(elapsed).toBeGreaterThanOrEqual(570);
+    expect(elapsed).toBeLessThan(900);
+    await waitFor(() => summaries(h).length === 2, 3000);
+    expect(summaries(h)[1]?.kind).toBe('silence_prompt');
+  });
+
+  it('no check while the caller dictates a number or while Mujeeb is still working on an answer', async () => {
+    const held = track(createHarness({ phone: PHONE, config: { numberHoldMs: 400, ...ending({}) } }));
+    await held.session.start();
+    held.sttStream.commit('رقم الهوية 1234'); // waits 400 ms for the rest, longer than the 200 ms silence limit
+    await waitFor(() => summaries(held).length >= 1, 3000);
+    expect(summaries(held)[0]?.kind).toBe('user');
+
+    const slow = track(createHarness({ llm: { firstTokenDelayMs: 400 }, phone: PHONE, config: ending({}) }));
+    await slow.session.start();
+    slow.sttStream.commit('ابي موعد');
+    await waitFor(() => summaries(slow).length >= 2, 4000);
+    expect(kinds(slow).slice(0, 2)).toEqual(['user:completed', 'silence_prompt:completed']);
+  });
+
+  it('a caller who speaks over the goodbye stops the hang-up', async () => {
+    const h = track(createHarness({ phone: PHONE, config: ending({}), transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await h.session.start();
+    await waitFor(
+      () => h.session.currentState === 'speaking' && h.events.some((e) => e.type === 'assistant_segment' && GOODBYE.startsWith(e.text)),
+      6000,
+      'goodbye playing',
+    );
+    h.sttStream.partial('لا أنا معك موجود');
+    h.sttStream.commit('لا أنا معك موجود');
+    await waitFor(() => summaries(h).some((s) => s.kind === 'user' && s.outcome === 'completed'), 5000, 'answer');
+    expect(kinds(h).slice(0, 2)).toEqual(['silence_prompt:completed', 'silence_goodbye:interrupted']);
+    expect(h.transport.closedReason).toBeUndefined();
+  });
+
+  it('off for browser sessions (no phone options) and when MUJEEB_SILENCE_PROMPT_MS is 0', async () => {
+    const browser = track(createHarness({ greeting: 'هلا', config: ending({ maxCallMs: 150 }) }));
+    const off = track(createHarness({ greeting: 'هلا', phone: PHONE, config: ending({ silencePromptMs: 0 }) }));
+    await Promise.all([browser.session.start(), off.session.start()]);
+    await delay(700);
+    for (const h of [browser, off]) {
+      expect(kinds(h)).toEqual(['greeting:completed']);
+      expect(h.session.currentState).toBe('listening');
+    }
+  });
+
+  it('at the maximum length while waiting: the goodbye, then the hang-up (max_duration); the caller cannot talk over it', async () => {
+    const h = track(createHarness({ phone: { maxDurationGoodbyeText: MAX_GOODBYE }, config: ending({ maxCallMs: 200 }), transport: new FakeTransport({ playbackSpeed: 0.5 }) }));
+    await h.session.start();
+    await waitFor(() => h.session.currentState === 'speaking', 3000, 'goodbye playing');
+    h.sttStream.partial('لحظة لحظة عندي سؤال');
+    h.sttStream.commit('لحظة لحظة عندي سؤال');
+    await waitFor(() => h.session.currentState === 'closed', 5000, 'hang-up');
+    expect(kinds(h)).toEqual(['max_duration_goodbye:completed']);
+    expect(h.transport.closedReason).toBe('max_duration');
+  });
+
+  it('at the maximum length during an answer: the answer finishes first, then the goodbye', async () => {
+    const h = track(createHarness({ llm: { firstTokenDelayMs: 300 }, phone: PHONE, config: ending({ maxCallMs: 100 }) }));
+    await h.session.start();
+    h.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => h.session.currentState === 'closed', 5000, 'hang-up');
+    expect(kinds(h)).toEqual(['user:completed', 'max_duration_goodbye:completed']);
+    expect(h.transport.closedReason).toBe('max_duration');
+  });
+
+  it('a turn that outlasts the grace is cut off; without goodbye words the call just ends', async () => {
+    const stuck = track(createHarness({ llm: { firstTokenDelayMs: 450 }, phone: PHONE, config: ending({ maxCallMs: 100, maxCallTurnGraceMs: 150 }) }));
+    await stuck.session.start();
+    stuck.sttStream.commit('ابي اعرف الدوام');
+    await waitFor(() => stuck.session.currentState === 'closed', 3000, 'forced hang-up');
+    expect(stuck.transport.closedReason).toBe('max_duration');
+    expect(kinds(stuck)).toEqual(['user:cancelled']);
+
+    const wordless = track(createHarness({ phone: {}, config: ending({ maxCallMs: 150 }) }));
+    await wordless.session.start();
+    await waitFor(() => wordless.session.currentState === 'closed', 3000, 'hang-up');
+    expect(wordless.transport.closedReason).toBe('max_duration');
+    expect(summaries(wordless)).toEqual([]);
+  });
+
+  it('createVoiceSession turns this on for phone calls only, with the clinic profile words', async () => {
+    const profile = await loadAgentProfile('config/agents/showcase-clinic');
+    const runtime: AgentRuntime = {
+      profile,
+      providers: { stt: new FakeSpeechToText({ mode: 'scripted' }), llm: new FakeLanguageModel(), tts: new FakeTextToSpeech({ msPerChar: 5 }) },
+      sessionConfig: { ...TEST_CONFIG, ...ending({}) },
+      metrics: new MemoryTurnSink(),
+    };
+    const sessionFor = (channel: 'phone' | 'browser') => {
+      const transport = new FakeTransport();
+      const session = createVoiceSession(runtime, { sessionId: `ses_${channel}`, channel, transport, log: silentLogger });
+      open.push(session);
+      return { session, transport };
+    };
+    const phone = sessionFor('phone');
+    const browser = sessionFor('browser');
+    await Promise.all([phone.session.start(), browser.session.start()]);
+    await waitFor(() => phone.session.currentState === 'closed', 8000, 'phone hang-up');
+    expect(phone.transport.closedReason).toBe('caller_silent');
+    expect(phone.session.history().map((m) => m.text)).toContain(profile.phone?.silencePromptText);
+    expect(browser.session.currentState).toBe('listening');
+    expect(browser.session.stats.silencePrompts).toBe(0);
   });
 });

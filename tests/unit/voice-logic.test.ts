@@ -57,6 +57,29 @@ describe('evaluateBargeIn', () => {
     expect(isEchoOf('الساعة عشرة المساء', agent, DEFAULT_BARGE_IN_POLICY)).toBe(true);
     expect(isEchoOf('ابي موعد بكرة', agent, DEFAULT_BARGE_IN_POLICY)).toBe(false);
   });
+
+  describe('an echo the STT misheard (speakerphone)', () => {
+    const greeting = 'هلا والله، معك مُجيب من مجمّع مُجيب الطبي. كيف أقدر أخدمك؟';
+    const over = (text: string, policy = DEFAULT_BARGE_IN_POLICY) => evaluateBargeIn(text, { fullText: greeting, spokenSoFar: greeting }, policy, { final: false });
+
+    it('is still echo when a few letters changed (observed live: "هلا والله" came back as "خلوا والله")', () => {
+      expect(over('خلوا والله.')).toMatchObject({ action: 'ignore', reason: 'echo' });
+      expect(over('خلو والله معك مجيب')).toMatchObject({ action: 'ignore', reason: 'echo' });
+      expect(isEchoOf('خلوا والله', greeting, DEFAULT_BARGE_IN_POLICY)).toBe(true);
+      expect(isEchoOf('معك محيب من مجمع', greeting, DEFAULT_BARGE_IN_POLICY)).toBe(true); // ج heard as ح
+    });
+
+    it("the caller's own words still interrupt, also next to an echoed phrase", () => {
+      for (const text of ['لا لحظة', 'ابي موعد', 'ابي اكلم الدكتور', 'هلا والله ابي موعد عند دكتور الاسنان', 'وش الدوام عندكم']) {
+        expect(over(text), text).toMatchObject({ action: 'interrupt', reason: 'speech' });
+      }
+      expect(isEchoOf('ابي موعد بكرة', greeting, DEFAULT_BARGE_IN_POLICY)).toBe(false);
+    });
+
+    it('is off with echoFuzzySimilarity 0: only exact word overlap counts', () => {
+      expect(over('خلوا والله', { ...DEFAULT_BARGE_IN_POLICY, echoFuzzySimilarity: 0 })).toMatchObject({ action: 'interrupt' });
+    });
+  });
 });
 
 describe('chunkText', () => {

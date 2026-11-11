@@ -4,6 +4,7 @@ import { ProviderError } from '../core/errors.js';
 import type { LanguageModel, LlmEvent, LlmRequest, ToolExchange, ToolResult, ToolSpec } from '../ports/language-model.js';
 import type { Conversation } from './conversation.js';
 import type { ToolCallResult, ToolTurnContext } from './tools/appointment-tools.js';
+import type { WaitPhraseSource } from './wait-phrases.js';
 
 /**
  * One user turn with tools: model round → tool calls → model round … until the model answers in text.
@@ -59,10 +60,11 @@ export interface AgentTurnOptions {
   firstEventTimeoutMs: number;
   mutationGraceMs: number;
   /**
-   * Said once, before the first tool runs, when the model has said nothing yet in this turn — so the caller
-   * does not wait in silence through several tool rounds (measured live: up to ~4.5 s without it).
+   * One phrase is said once, before the first tool runs, when the model has said nothing yet in this turn — so
+   * the caller does not wait in silence through several tool rounds (measured live: up to ~4.5 s without it).
+   * Shared by the session's turns, so the phrases vary across the call.
    */
-  waitPhrase?: string;
+  waitPhrases?: WaitPhraseSource;
   /** Extra context for this turn only (e.g. outcomes of earlier writes that were just reconciled). */
   notes?: readonly string[];
   onLlmRequest?: (round: number) => void;
@@ -122,8 +124,8 @@ export class AgentTurn {
         const calls = mayCallTools ? (completion.toolCalls ?? []) : [];
         if (calls.length === 0) break;
 
-        if (!this.saidAnything && this.o.waitPhrase !== undefined && this.o.waitPhrase.trim() !== '') {
-          this.output.push({ type: 'text', text: this.o.waitPhrase });
+        if (!this.saidAnything && this.o.waitPhrases !== undefined && this.o.waitPhrases.all.length > 0) {
+          this.output.push({ type: 'text', text: this.o.waitPhrases.next() });
           this.saidAnything = true;
           this.waitPhraseSpoken = true;
         }
@@ -180,10 +182,11 @@ export class AgentTurn {
     let first = true;
     // The model tends to open a later round with the wait phrase the caller already heard (it sees it in the
     // history; observed live as "لحظة أشيك لك. لحظة أشيك لك."): hold the round's first words while they could
-    // be that phrase, and drop it if they are. Compared word by word after normalizeArabic, so the model's
+    // be a wait phrase, and drop it if they are. Any of the clinic's phrases counts — once the caller heard one,
+    // a second filler is just as redundant. Compared word by word after normalizeArabic, so the model's
     // spelling of it ("لحظة أشيك" for "لحظه أشيّك") still counts.
-    const phrase = tokenize(this.o.waitPhrase ?? '');
-    let held: string | undefined = this.waitPhraseSpoken && phrase.length > 0 ? '' : undefined;
+    const phrases = (this.o.waitPhrases?.all ?? []).map((p) => tokenize(p)).filter((p) => p.length > 0);
+    let held: string | undefined = this.waitPhraseSpoken && phrases.length > 0 ? '' : undefined;
     let roundText = '';
     const say = (text: string): void => {
       roundText += text;
@@ -199,8 +202,8 @@ export class AgentTurn {
         }
         if (event.type === 'completed') {
           // The round is over, so its last word is complete (the trailing space closes it).
-          if (held !== undefined && held !== '' && leadingPhrase(`${held} `, phrase).match !== 'yes') say(held);
-          if (phrase.length > 0 && leadingPhrase(`${roundText} `, phrase).match === 'yes') this.waitPhraseSpoken = true;
+          if (held !== undefined && held !== '' && leadingAnyPhrase(`${held} `, phrases).match !== 'yes') say(held);
+          if (phrases.length > 0 && leadingAnyPhrase(`${roundText} `, phrases).match === 'yes') this.waitPhraseSpoken = true;
           return event;
         }
         if (held === undefined) {
@@ -208,7 +211,7 @@ export class AgentTurn {
           continue;
         }
         held += event.text;
-        const found = leadingPhrase(held, phrase);
+        const found = leadingAnyPhrase(held, phrases);
         if (found.match === 'maybe') continue;
         const rest = found.match === 'yes' ? held.slice(found.end) : held; // the repeat is dropped; the rest of the round flows
         held = undefined;
@@ -249,7 +252,20 @@ const WORD = /[\p{L}\p{N}\p{M}]+/gu;
  * `maybe`: the text so far could still become the phrase. `end`: where the phrase and the punctuation and
  * spaces after it end in `text`.
  */
-function leadingPhrase(text: string, phrase: readonly string[]): { match: 'yes'; end: number } | { match: 'maybe' | 'no' } {
+type PhraseMatch = { match: 'yes'; end: number } | { match: 'maybe' | 'no' };
+
+/** leadingPhrase against several phrases: `yes` if any matches, else `maybe` while any still could. */
+function leadingAnyPhrase(text: string, phrases: readonly (readonly string[])[]): PhraseMatch {
+  let maybe = false;
+  for (const phrase of phrases) {
+    const found = leadingPhrase(text, phrase);
+    if (found.match === 'yes') return found;
+    if (found.match === 'maybe') maybe = true;
+  }
+  return { match: maybe ? 'maybe' : 'no' };
+}
+
+function leadingPhrase(text: string, phrase: readonly string[]): PhraseMatch {
   if (phrase.length === 0) return { match: 'no' };
   let matched = 0;
   for (const m of text.matchAll(WORD)) {

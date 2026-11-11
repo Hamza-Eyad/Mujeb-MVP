@@ -1,0 +1,24 @@
+{
+  "tenantId": "showcase",
+  "agentId": "showcase-clinic",
+  "displayName": "مجمّع مُجيب الطبي",
+  "languageCode": "ar",
+  "greeting": "هلا والله، معك مُجيب من مجمّع مُجيب الطبي. كيف أقدر أخدمك؟",
+  "instructionsFile": "instructions.md",
+  "historyMaxTurns": 12,
+  "timezone": "Asia/Riyadh",
+  "schedulingDataset": "../../test-data/showcase-clinic.dataset.json",
+  "appointmentTools": {
+    "instructionsFile": "tools.md",
+    "patientVerification": "dev-identifier-dob",
+    "maxToolRounds": 5,
+    "pendingActionTtlSec": 120,
+    "maxReconfirmations": 2,
+    "waitPhrases": ["لحظه أشيّك لك.", "ثواني بس.", "خلني أشوف لك.", "أبشر، لحظات.", "طيب، خلني أتأكد.", "ثانيه وحده."]
+  },
+  "phone": {
+    "silencePromptText": "ألو؟ معك مُجيب، تسمعني؟",
+    "silenceGoodbyeText": "يبدو إن الخط فيه مشكلة. نعتذر منك، وتقدر تتصل علينا بأي وقت. مع السلامة.",
+    "maxDurationGoodbyeText": "نعتذر منك، وصلنا للحد الأقصى لمدة المكالمة. تقدر تتصل علينا مرة ثانية بأي وقت. مع السلامة."
+  }
+}

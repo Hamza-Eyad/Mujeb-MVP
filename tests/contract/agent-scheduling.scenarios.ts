@@ -4,6 +4,7 @@ import { FakeLanguageModel, type FakeRound } from '../../src/adapters/fakes/fake
 import { type AgentToolbox, AgentTurn } from '../../src/agent/agent-turn.js';
 import { Conversation } from '../../src/agent/conversation.js';
 import { AppointmentTools } from '../../src/agent/tools/appointment-tools.js';
+import { WaitPhrasePicker } from '../../src/agent/wait-phrases.js';
 import { loadAgentProfile } from '../../src/app/agent-profile.js';
 import { createScheduling } from '../../src/app/container.js';
 import { loadSchedulingDataset } from '../../src/app/scheduling-dataset.js';
@@ -193,6 +194,7 @@ async function startCall(fixture: AgentSchedulingFixture) {
   const transcript: TurnResult[] = [];
 
   /** One caller turn: the model plays `turnSteps` (one tool round each), then answers in text. */
+  const waitPhrases = toolsProfile.waitPhrases !== undefined ? new WaitPhrasePicker(toolsProfile.waitPhrases) : undefined; // one per conversation
   const say = async (user: string, turnSteps: readonly Step[] = []): Promise<TurnResult> => {
     steps = turnSteps;
     const userTurn = transcript.length + 1;
@@ -208,7 +210,7 @@ async function startCall(fixture: AgentSchedulingFixture) {
       maxToolRounds: toolsProfile.maxToolRounds,
       firstEventTimeoutMs: settings.llm.firstTokenTimeoutMs,
       mutationGraceMs: 0,
-      ...(toolsProfile.waitPhrase !== undefined ? { waitPhrase: toolsProfile.waitPhrase } : {}),
+      ...(waitPhrases !== undefined ? { waitPhrases } : {}),
     });
     let reply = '';
     for await (const out of agent.output) reply += out.type === 'text' ? out.text : ' ';

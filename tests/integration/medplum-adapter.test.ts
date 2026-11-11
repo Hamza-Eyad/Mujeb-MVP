@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MedplumClient, describePath } from '../../src/adapters/medplum/client.js';
 import { CANCELLATION_REASON_SYSTEM } from '../../src/adapters/medplum/fhir-schemas.js';
 import { IDEMPOTENCY_KEY_SYSTEM, MedplumSchedulingSystem } from '../../src/adapters/medplum/medplum-scheduling.js';
@@ -159,8 +159,10 @@ describe('MedplumSchedulingSystem — directory and availability', () => {
     expect(t.server.fhir('GET', /^Schedule$/)).toHaveLength(1); // cached
     expect(t.server.fhir('GET', /^Practitioner$/)[0]?.query.get('_id')?.split(',').sort()).toEqual(['pr-fahad', 'pr-khalid', 'pr-reem', 'pr-sara']);
     t.advance(61_000);
-    await t.system.searchDirectory(t.ctx(), { kind: 'any', limit: 5 });
-    expect(t.server.fhir('GET', /^Schedule$/)).toHaveLength(2); // TTL expired → reloaded
+    // TTL expired: a search answers from the cached copy at once, and the directory reloads in the background.
+    const stale = await t.system.searchDirectory(t.ctx(), { kind: 'any', limit: 5 });
+    expect(stale.entries.length).toBeGreaterThan(0);
+    await vi.waitFor(() => expect(t.server.fhir('GET', /^Schedule$/)).toHaveLength(2));
     await expect(t.system.searchDirectory(t.ctx(), { kind: 'practitioner', serviceId: 'hs-unknown', limit: 5 })).rejects.toMatchObject({ kind: 'not_found' });
   });
 
