@@ -1,5 +1,6 @@
 import { type AgentToolEvent, type AgentToolbox, AgentTurn } from '../agent/agent-turn.js';
 import { Conversation } from '../agent/conversation.js';
+import { WaitPhrasePicker } from '../agent/wait-phrases.js';
 import { abortReason, raceAbort, sleep, withDeadline } from '../core/async.js';
 import { bytesForDuration, concatBytes, durationMs, pcm16Samples } from '../core/audio.js';
 import { CancelledError, ProviderError, errorSummary } from '../core/errors.js';
@@ -7,13 +8,13 @@ import { newTurnId } from '../core/ids.js';
 import type { Logger } from '../core/logger.js';
 import type { TenantContext } from '../core/tenant.js';
 import { LevelHistogram } from '../observability/level-histogram.js';
-import type { BargeInStats, LineLevel, TurnOutcome, TurnSummary, TurnSummarySink, VadSegment } from '../observability/turn-metrics.js';
+import type { BargeInStats, LineLevel, TurnKind, TurnOutcome, TurnSummary, TurnSummarySink, VadSegment } from '../observability/turn-metrics.js';
 import { type TurnMark, TurnTimeline } from '../observability/turn-timeline.js';
 import type { AudioTransport, TransportEvent } from '../ports/audio-transport.js';
 import type { LanguageModel } from '../ports/language-model.js';
 import type { SpeechToText, SttEvent, SttStream } from '../ports/speech-to-text.js';
 import type { TextToSpeech, TtsSession } from '../ports/text-to-speech.js';
-import { normalizeArabic } from './arabic-text.js';
+import { normalizeArabic, tokenize } from './arabic-text.js';
 import { type BargeInDecision, type BargeInPolicy, evaluateBargeIn, isEchoOf } from './barge-in-policy.js';
 import { EnergyVad, type EnergyVadOptions } from './energy-vad.js';
 import { endsWithNumber } from './number-hold.js';
@@ -29,6 +30,9 @@ import { CHUNK_FLUSH, type ChunkerOptions, chunkText } from './text-chunker.js';
 
 /** How often a soft pause re-checks whether the caller is still talking before resuming. */
 const PAUSE_RECHECK_MS = 250;
+
+/** A caller's first partial lags the start of their speech (≈1.7 s measured live): how far back to look for it. */
+const STALE_SPEECH_LEAD_MS = 2000;
 
 const DEFAULT_MAX_TOOL_ROUNDS = 5;
 /** Pause before a data-changing tool runs, so a caller who keeps talking ("yes… but") cancels it first. */
@@ -47,6 +51,30 @@ export interface SessionCounters {
   staleChunksDropped: number;
   framesIn: number;
   framesDroppedNoStt: number;
+  /** Phone calls: times Mujeeb checked a silent line. */
+  silencePrompts: number;
+  /** Wait phrases said before a tool (the model's own words not counted). */
+  waitPhrasesSpoken: number;
+  /** STT partials that repeated the utterance's words (often line noise): ignored. */
+  partialRepeatsIgnored: number;
+  /** Partials answered without the STT's commit, after their words stopped changing (stalePartialCommitMs). */
+  stalePartialCommits: number;
+  /** Single words heard around the greeting, ignored as its likely echo (see aroundGreeting). */
+  greetingWordsIgnored: number;
+}
+
+/** Why a call ends on Mujeeb's side (the `session.close` reason). */
+type CallEndReason = 'caller_silent' | 'max_duration';
+
+/** The fixed-text turn that ends the call once it has played, and why. */
+const ENDING_TURNS: Partial<Record<TurnKind, CallEndReason>> = { silence_goodbye: 'caller_silent', max_duration_goodbye: 'max_duration' };
+
+/** Phone calls only: the clinic's fixed words for a silent line and for the end of the maximum call length. */
+export interface PhoneCallOptions {
+  /** Without it, caller silence never ends the call. */
+  silence?: { promptText: string; goodbyeText: string };
+  /** Said when the call reaches `callEnding.maxCallMs`. Absent: the call is hung up without words. */
+  maxDurationGoodbyeText?: string;
 }
 
 export type SessionEvent =
@@ -90,6 +118,17 @@ export interface VoiceSessionConfig {
    * continues after a pause). Speech in the meantime merges into the same turn. 0 = off.
    */
   numberHoldMs: number;
+  /**
+   * While Mujeeb waits, a partial whose words have not changed for this long, with no commit from the STT, is
+   * answered as if committed (the STT's VAD can take steady noise for speech and hold the commit). 0 = off.
+   */
+  stalePartialCommitMs: number;
+  /**
+   * Sessions given `phone` options only. Silence: after `silencePromptMs` without the caller, Mujeeb checks the
+   * line; after `silenceHangupMs` more, it says goodbye and hangs up. `maxCallMs`: the longest call, from start();
+   * a turn under way gets `maxCallTurnGraceMs` to finish first. 0 = off (silencePromptMs, maxCallMs).
+   */
+  callEnding: { silencePromptMs: number; silenceHangupMs: number; maxCallMs: number; maxCallTurnGraceMs: number };
 }
 
 export interface VoiceSessionDeps {
@@ -104,9 +143,11 @@ export interface VoiceSessionDeps {
     toolMutationGraceMs?: number;
     /** How long close() waits for writes still in flight. */
     toolDrainTimeoutMs?: number;
-    /** Said before the first tool of a turn when the model has said nothing yet (e.g. "لحظة أشيك لك."). */
-    toolWaitPhrase?: string;
+    /** One is said before the first tool of a turn when the model has said nothing yet (e.g. "لحظة أشيك لك."), varied across the call. */
+    toolWaitPhrases?: readonly string[];
   };
+  /** Phone calls: silence handling and the maximum call length (callEnding). Absent (browser): neither. */
+  phone?: PhoneCallOptions;
   transport: AudioTransport;
   stt: SpeechToText;
   llm: LanguageModel;
@@ -141,7 +182,7 @@ interface HeardUtterance {
 
 interface ActiveTurn {
   readonly id: string;
-  readonly kind: 'user' | 'greeting';
+  readonly kind: TurnKind;
   readonly beganAt: number;
   /** 1, 2, … per caller utterance (a continued utterance keeps its number); 0 for the greeting. */
   readonly userTurn: number;
@@ -212,6 +253,29 @@ export class VoiceSession {
   private lastRttMs: number | undefined;
   private sttBuffer: Uint8Array[] = [];
   private sttBufferedBytes = 0;
+  /** The current STT utterance's words so far (normalized), to tell new words from a repeated partial. */
+  private partialWords: string[] = [];
+  /** Words of the current STT utterance already answered without its commit (stale partial): not answered twice. */
+  private answeredWords: string[] = [];
+  /** When the current STT utterance's first words arrived. */
+  private utteranceStartedAt = 0;
+  /** The current STT utterance began during the greeting or its echo tail (see aroundGreeting). */
+  private utteranceAroundGreeting = false;
+  /** When the greeting turn ended (completed, interrupted or cancelled). */
+  private greetingEndedAt: number | undefined;
+  private stalePartialTimer: NodeJS.Timeout | undefined;
+  /** One per session, so the wait phrases vary across the call's turns. */
+  private readonly waitPhrases: WaitPhrasePicker | undefined;
+
+  /** Phone calls: what caller silence leads to next (the check, then the goodbye), its timer and when it was set. */
+  private silenceStep: 'prompt' | 'goodbye' = 'prompt';
+  private silenceTimer: NodeJS.Timeout | undefined;
+  private silenceSince = 0;
+  /** The call reached its maximum length: it ends as soon as no turn is under way. */
+  private maxCallReached = false;
+  /** The goodbye that ends the call has started (or the call is being hung up): nothing else starts. */
+  private endingCall = false;
+  private maxCallGraceTimer: NodeJS.Timeout | undefined;
 
   private readonly markWaiters = new Map<string, () => void>();
   private readonly awaitingClearAck = new Map<number, ActiveTurn>();
@@ -226,6 +290,11 @@ export class VoiceSession {
     staleChunksDropped: 0,
     framesIn: 0,
     framesDroppedNoStt: 0,
+    silencePrompts: 0,
+    waitPhrasesSpoken: 0,
+    partialRepeatsIgnored: 0,
+    stalePartialCommits: 0,
+    greetingWordsIgnored: 0,
   };
 
   constructor(deps: VoiceSessionDeps) {
@@ -236,6 +305,8 @@ export class VoiceSession {
     this.conversation = new Conversation({ instructions: deps.agent.instructions, maxTurns: deps.agent.historyMaxTurns });
     this.vad = new EnergyVad(this.cfg.vad);
     this.sttChunkBytes = bytesForDuration(this.cfg.sttChunkMs, deps.transport.inputFormat);
+    const phrases = deps.agent.toolWaitPhrases?.filter((p) => p.trim() !== '') ?? [];
+    this.waitPhrases = phrases.length > 0 ? new WaitPhrasePicker(phrases, { onPick: () => (this.counters.waitPhrasesSpoken += 1) }) : undefined;
   }
 
   get currentState(): SessionState {
@@ -265,6 +336,8 @@ export class VoiceSession {
   async start(): Promise<void> {
     await this.prepare();
     if (this.state === 'closed') return;
+    const maxCallMs = this.deps.phone ? this.cfg.callEnding.maxCallMs : 0;
+    if (maxCallMs > 0) this.setTimer(() => this.onMaxCallLength(), maxCallMs);
     this.setState('listening');
     const greeting = this.deps.agent.greeting;
     if (greeting !== undefined && greeting.trim() !== '') {
@@ -490,18 +563,63 @@ export class VoiceSession {
         this.sttReconnectAttempts = 0;
         this.emit({ type: 'stt_ready', effective: event.effective });
         break;
-      case 'partial':
-        this.onPartial(event.text.trim());
+      case 'partial': {
+        const text = event.text.trim();
+        const words = tokenize(text);
+        // The STT repeats an utterance's partial while audio flows, also when that audio is only noise. A partial
+        // that repeats words already seen is not the caller saying anything: it neither interrupts nor cancels a
+        // reply, nor holds the silence clock (observed live on speakerphone: an AC hum kept one partial alive for
+        // ~30 s). Partials without words go on as before (the barge-in policy ignores them, and counts them).
+        const startsUtterance = this.partialWords.length === 0;
+        if (words.length > 0 && !this.bringsNewWords(words)) {
+          this.counters.partialRepeatsIgnored += 1;
+          break;
+        }
+        if (words.length > 0 && startsUtterance) {
+          this.utteranceStartedAt = this.now();
+          this.utteranceAroundGreeting = this.aroundGreeting();
+        }
+        if (words.length === 1 && this.utteranceAroundGreeting) {
+          this.ignoreGreetingWord(text); // may still grow into real speech: two words go on as usual
+          break;
+        }
+        this.onPartial(text);
+        if (words.length > 0) this.armStalePartial(text);
+        if (words.length > 0 && !this.isOwnEcho(text)) this.refreshSilenceWatch(); // the caller's words: silence counts from now
         break;
-      case 'committed':
-        this.onCommitted(event.text.trim());
+      }
+      case 'committed': {
+        this.clearStalePartial();
+        const answered = this.answeredWords;
+        const aroundGreeting = this.utteranceAroundGreeting || this.aroundGreeting();
+        this.partialWords = []; // the STT utterance is over: the next partial starts a new one
+        this.answeredWords = [];
+        this.utteranceAroundGreeting = false;
+        // Part of this utterance was already answered from its stale partial: only words past it are new.
+        const text = answered.length > 0 ? tokenize(event.text).slice(answered.length).join(' ') : event.text.trim();
+        if (answered.length > 0 && text === '') {
+          this.log.info('stt.late_commit_already_answered', { words: answered.length });
+          break;
+        }
+        if (aroundGreeting && tokenize(text).length === 1) {
+          this.ignoreGreetingWord(text); // its commit often comes after the greeting ended: still the greeting's echo
+          if (this.state === 'listening' && this.current === null) this.discardPending();
+          break;
+        }
+        this.onCommitted(text);
+        if (text !== '' && !this.isOwnEcho(text)) this.refreshSilenceWatch();
         break;
+      }
       case 'warning':
         this.log.warn('stt.warning', errorSummary(event.error));
         this.emit({ type: 'warning', code: `stt_${event.error.kind}`, message: event.error.message });
         break;
       case 'closed':
         this.sttStream = undefined;
+        this.partialWords = []; // a reconnected stream starts its utterances afresh
+        this.answeredWords = [];
+        this.utteranceAroundGreeting = false;
+        this.clearStalePartial();
         this.log.warn('stt.closed', event.error ? errorSummary(event.error) : {});
         this.scheduleSttReconnect(event.error);
         break;
@@ -537,6 +655,7 @@ export class VoiceSession {
   private onPartial(text: string): void {
     if (text === '') return;
     const turn = this.current;
+    if (turn?.kind === 'max_duration_goodbye') return; // the call is ending: the goodbye is not interrupted
     if (turn && this.state === 'speaking') {
       this.handleSpeakingTranscript(turn, text, false);
       return;
@@ -559,6 +678,7 @@ export class VoiceSession {
 
   private onCommitted(text: string): void {
     const turn = this.current;
+    if (turn?.kind === 'max_duration_goodbye') return; // the call is ending: the goodbye is not interrupted
     if (turn && this.state === 'speaking') {
       if (text === '') {
         turn.heard = undefined; // the STT utterance ended without words
@@ -607,8 +727,11 @@ export class VoiceSession {
     this.log.info('turn.number_hold', { ms: this.cfg.numberHoldMs });
     this.numberHoldTimer = this.setTimer(() => {
       this.numberHoldTimer = undefined;
-      if (this.state !== 'closed') this.startUserTurn('');
+      if (this.state === 'closed') return;
+      this.startUserTurn('');
+      this.refreshSilenceWatch(); // nothing to answer after all: back to waiting for the caller
     }, this.cfg.numberHoldMs);
+    this.refreshSilenceWatch(); // the caller is mid-number: no silence check meanwhile
   }
 
   private clearNumberHold(): void {
@@ -800,6 +923,7 @@ export class VoiceSession {
     this.current = turn;
     this.activeEpoch = turn.epoch;
     this.counters.turns += 1;
+    if (kind === 'user') this.silenceStep = 'prompt'; // the caller is there: a later silence is checked again first
     this.log.info('turn.start', this.textFields({ turn_id: turn.id, kind, epoch: turn.epoch, text: userText }));
     this.setState('thinking');
     void this.runTurn(turn, fixedText);
@@ -861,7 +985,7 @@ export class VoiceSession {
       maxToolRounds: this.deps.agent.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS,
       firstEventTimeoutMs: this.cfg.llmFirstTokenTimeoutMs,
       mutationGraceMs: this.deps.agent.toolMutationGraceMs ?? DEFAULT_TOOL_MUTATION_GRACE_MS,
-      ...(this.deps.agent.toolWaitPhrase !== undefined ? { waitPhrase: this.deps.agent.toolWaitPhrase } : {}),
+      ...(this.waitPhrases !== undefined ? { waitPhrases: this.waitPhrases } : {}),
       notes,
       onLlmFirstEvent: (round) => {
         if (round === 0) turn.timeline.mark('llm_first_token');
@@ -997,6 +1121,11 @@ export class VoiceSession {
     // Drop a pending timeline that only saw echo/noise during playback (no transcript evidence).
     if (this.pendingTimeline && !this.pendingTimeline.has('stt_first_partial')) this.discardPending();
     this.finalizeTurn(turn, 'completed');
+    const endReason = ENDING_TURNS[turn.kind];
+    if (endReason !== undefined) {
+      void this.close(endReason); // the goodbye has played: hang up
+      return;
+    }
     this.setState('listening');
   }
 
@@ -1013,6 +1142,11 @@ export class VoiceSession {
     this.current = null;
     this.finalizeTurn(turn, 'error', undefined, summary);
     this.emit({ type: 'error', code: summary.error_kind ? `turn_${summary.error_kind}` : 'turn_failed', message: summary.message });
+    const endReason = ENDING_TURNS[turn.kind];
+    if (endReason !== undefined) {
+      void this.close(endReason); // the goodbye could not be spoken: the call ends anyway
+      return;
+    }
     this.setState('listening');
   }
 
@@ -1029,6 +1163,7 @@ export class VoiceSession {
   private finalizeTurn(turn: ActiveTurn, outcome: TurnOutcome, reason?: string, error?: TurnSummary['error']): void {
     if (turn.finalized) return;
     turn.finalized = true;
+    if (turn.kind === 'greeting') this.greetingEndedAt = this.now();
     this.clearTimer(turn.falseInterruptTimer);
     if (this.vadSegment?.turn === turn) this.closeVadSegment(this.vad.speechMs, true);
     const interrupted = outcome === 'interrupted';
@@ -1128,6 +1263,164 @@ export class VoiceSession {
     if (this.state === 'closed') return;
     this.state = state;
     this.emit({ type: 'state', state });
+    if (state === 'listening' && this.maxCallReached) {
+      this.endCallAtMaxLength(); // the turn that was under way at the limit is done
+      return;
+    }
+    this.refreshSilenceWatch();
+  }
+
+  // ───────────────────────── phone: silence and call length ─────────────────────────
+
+  /**
+   * True when a partial has words its STT utterance has not shown yet (more words, or a word not in the previous
+   * partial), and records them. A repeat of the same words, whatever its punctuation, is false.
+   */
+  private bringsNewWords(words: readonly string[]): boolean {
+    if (words.length === 0) return false;
+    const known = new Set(this.partialWords);
+    const fresh = words.length > this.partialWords.length || words.some((word) => !known.has(word));
+    if (fresh) this.partialWords = [...words];
+    return fresh;
+  }
+
+  /** Mujeeb's own last words coming back from the line right after it stopped speaking (speakerphone echo). */
+  private isOwnEcho(text: string): boolean {
+    return this.withinEchoTail() && isEchoOf(text, this.lastAssistantText, this.cfg.bargeIn);
+  }
+
+  /**
+   * During the greeting or within its echo tail: the call's first seconds, when a phone's echo canceller has not
+   * adapted yet and Mujeeb's own voice leaks back most (observed live on speakerphone: the greeting came back as
+   * "خلوا والله" on one call and as "أنا" on another, and cut the greeting short).
+   */
+  private aroundGreeting(): boolean {
+    if (this.current?.kind === 'greeting') return true;
+    return this.greetingEndedAt !== undefined && this.now() - this.greetingEndedAt <= this.cfg.echoTailMs;
+  }
+
+  /**
+   * A single word in an utterance that began around the greeting is taken for its echo: it neither pauses nor
+   * interrupts the greeting, and is not answered. Two words or more are the caller and go on as usual.
+   */
+  private ignoreGreetingWord(text: string): void {
+    this.counters.greetingWordsIgnored += 1;
+    this.log.info('barge_in.greeting_word_ignored', this.textFields({ text }));
+    this.emitCounters();
+  }
+
+  /** (Re)starts the wait for the STT to commit the caller's latest words; see onStalePartial. */
+  private armStalePartial(text: string): void {
+    this.clearStalePartial();
+    const ms = this.cfg.stalePartialCommitMs;
+    if (ms <= 0) return;
+    this.stalePartialTimer = this.setTimer(() => this.onStalePartial(text, ms), ms);
+  }
+
+  private clearStalePartial(): void {
+    this.clearTimer(this.stalePartialTimer);
+    this.stalePartialTimer = undefined;
+  }
+
+  /**
+   * The caller's words stopped changing `ms` ago and the STT still has not committed them (observed live: a steady
+   * AC hum held a commit for ~30 s, so the caller heard nothing). While Mujeeb waits, they are answered as if
+   * committed. A commit that still comes later only adds the words past them (`answeredWords`). While Mujeeb speaks
+   * or thinks, partials are the barge-in policy's to judge, so nothing happens then.
+   */
+  private onStalePartial(text: string, ms: number): void {
+    this.stalePartialTimer = undefined;
+    if (this.state !== 'listening' || this.current !== null) return;
+    const fresh = this.partialWords.slice(this.answeredWords.length);
+    if (fresh.length === 0) return;
+    // Only words the line carried as speech: the local VAD heard the caller around them. The STT also makes words
+    // out of noise (observed live: "No." on a silent speakerphone line), and those must not get an answer; they
+    // are left to the STT's own commit, as before.
+    const heardSpeech = this.vad.isSpeaking || this.lastVadEndAt >= this.utteranceStartedAt - STALE_SPEECH_LEAD_MS;
+    if (!heardSpeech) {
+      this.log.info('stt.stale_partial_without_speech', { stale_ms: ms, words: fresh.length });
+      return;
+    }
+    const answer = this.answeredWords.length === 0 ? text : fresh.join(' ');
+    this.answeredWords = [...this.partialWords];
+    this.counters.stalePartialCommits += 1;
+    this.log.info('stt.stale_partial_answered', { stale_ms: ms, words: fresh.length });
+    this.onCommitted(answer);
+    if (!this.isOwnEcho(answer)) this.refreshSilenceWatch();
+  }
+
+  /**
+   * Phone calls: (re)starts the silence timer while Mujeeb waits for the caller, and stops it otherwise. Silence
+   * means no new words from the caller — sound alone (noise, an AC hum, breathing) does not count, and neither does
+   * a repeated partial or Mujeeb's own echo. Called on state changes, on the caller's new words and around number
+   * hold, so silence counts from the last of them. The first silence gets the check (`silence_prompt`); silence
+   * after it, the goodbye and hang-up.
+   */
+  private refreshSilenceWatch(): void {
+    this.clearTimer(this.silenceTimer);
+    this.silenceTimer = undefined;
+    const silence = this.deps.phone?.silence;
+    const { silencePromptMs, silenceHangupMs } = this.cfg.callEnding;
+    if (!silence || silencePromptMs <= 0) return;
+    if (this.state !== 'listening' || this.current !== null || this.maxCallReached || this.endingCall) return;
+    if (this.numberHoldTimer !== undefined) return; // the caller is mid-number: the hold ends in a turn
+    this.silenceSince = this.now();
+    this.silenceTimer = this.setTimer(() => this.onCallerSilent(), this.silenceStep === 'prompt' ? silencePromptMs : silenceHangupMs);
+  }
+
+  private onCallerSilent(): void {
+    this.silenceTimer = undefined;
+    const silence = this.deps.phone?.silence;
+    if (!silence || this.state !== 'listening' || this.current !== null) return;
+    const silentMs = Math.round(this.now() - this.silenceSince);
+    if (this.silenceStep === 'prompt') {
+      this.silenceStep = 'goodbye';
+      this.counters.silencePrompts += 1;
+      this.log.info('call.silence_prompt', { silent_ms: silentMs });
+      this.emitCounters();
+      this.beginTurn('silence_prompt', '', this.newTimeline(), silence.promptText);
+      return;
+    }
+    // Played to the end, it hangs up (completeTurn). Interrupted by the caller, the call goes on.
+    this.log.info('call.silence_goodbye', { silent_ms: silentMs });
+    this.beginTurn('silence_goodbye', '', this.newTimeline(), silence.goodbyeText);
+  }
+
+  /** Phone calls: the maximum length is reached. Ends the call now if Mujeeb is waiting, else once the turn under way is done. */
+  private onMaxCallLength(): void {
+    if (this.state === 'closed') return;
+    this.maxCallReached = true;
+    this.clearTimer(this.silenceTimer);
+    this.silenceTimer = undefined;
+    this.log.info('call.max_duration', { max_ms: this.cfg.callEnding.maxCallMs, state: this.state });
+    if (this.state === 'listening' && this.current === null) {
+      this.endCallAtMaxLength();
+      return;
+    }
+    // An answer, or a write the caller confirmed, is under way: let it finish, within a bound.
+    const graceMs = this.cfg.callEnding.maxCallTurnGraceMs;
+    this.maxCallGraceTimer = this.setTimer(() => {
+      this.maxCallGraceTimer = undefined;
+      if (this.endingCall) return;
+      this.endingCall = true;
+      this.log.warn('call.max_duration_forced', { grace_ms: graceMs });
+      void this.close('max_duration'); // close() still lets confirmed writes finish
+    }, graceMs);
+  }
+
+  /** The goodbye at the maximum length (not interruptible), then the hang-up. Without the clinic's words, hangs up at once. */
+  private endCallAtMaxLength(): void {
+    if (this.endingCall || this.state === 'closed') return;
+    this.endingCall = true;
+    this.clearTimer(this.maxCallGraceTimer);
+    this.maxCallGraceTimer = undefined;
+    this.clearNumberHold();
+    const text = this.deps.phone?.maxDurationGoodbyeText;
+    if (text === undefined || text.trim() === '') {
+      void this.close('max_duration');
+      return;
+    }
+    this.beginTurn('max_duration_goodbye', '', this.newTimeline(), text);
   }
 
   private emit(event: SessionEvent): void {

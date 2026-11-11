@@ -34,7 +34,7 @@ function setup(options: {
   script?: Script;
   llm?: LanguageModel;
   latencyMs?: number;
-  agent?: { maxToolRounds?: number; toolMutationGraceMs?: number; toolWaitPhrase?: string };
+  agent?: { maxToolRounds?: number; toolMutationGraceMs?: number; toolWaitPhrases?: readonly string[] };
   llmDelayMs?: number;
   /** Fraction of real time the fake client takes to play audio (default 0.05). */
   playbackSpeed?: number;
@@ -286,7 +286,7 @@ describe('VoiceSession with appointment tools — the read-back the caller confi
 
   it('says the wait phrase before the first tool when the model said nothing, once per turn, and not when it did', async () => {
     const silentSteps = BOOKING_STEPS.map((step) => (out: Record<string, unknown>[]) => ({ ...step(out), text: undefined }));
-    const h = setup({ script: flow('أبي موعد', silentSteps, 'أحجز؟ '), agent: { toolWaitPhrase: 'لحظة أشيك لك.' } });
+    const h = setup({ script: flow('أبي موعد', silentSteps, 'أحجز؟ '), agent: { toolWaitPhrases: ['لحظة أشيك لك.'] } });
     await h.session.start();
     h.sttStream.commit('أبي موعد');
     await waitFor(() => summaries(h).length === 1, 8000);
@@ -298,7 +298,7 @@ describe('VoiceSession with appointment tools — the read-back the caller confi
     expect(h.events.findIndex((e) => e.type === 'assistant_segment')).toBeLessThan(laterToolAt);
     expect(spokenIn(h, 0)).toContain(READ_BACK); // the read-back check is not disturbed by the phrase
 
-    const talkative = setup({ script: bookingScript(), agent: { toolWaitPhrase: 'لحظة أشيك لك.' } }); // the model says its own "one moment"
+    const talkative = setup({ script: bookingScript(), agent: { toolWaitPhrases: ['لحظة أشيك لك.'] } }); // the model says its own "one moment"
     await talkative.session.start();
     talkative.sttStream.commit('أبي موعد');
     await waitFor(() => summaries(talkative).length === 1, 8000);

@@ -28,6 +28,11 @@ const envSchema = z.object({
   MUJEEB_STT_VAD_SILENCE_SECS: z.coerce.number().min(0.2).max(3).default(0.8),
   MUJEEB_STT_CHUNK_MS: z.coerce.number().int().min(20).max(1000).default(100),
   MUJEEB_STT_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(3000),
+  /**
+   * The caller's words stopped changing this long ago but the STT has not committed them (its VAD can take steady
+   * noise for speech): Mujeeb answers them anyway. Above the longest normal commit delay (2.7 s on 2026-11-09). 0 = off.
+   */
+  MUJEEB_STT_STALE_PARTIAL_MS: z.coerce.number().int().min(0).max(30_000).default(3000),
 
   MUJEEB_TTS_PROVIDER: z.enum(['elevenlabs', 'fake']).default('elevenlabs'),
   MUJEEB_TTS_MODEL: optionalString,
@@ -43,6 +48,12 @@ const envSchema = z.object({
   /** Extra wait before answering when the caller's words end with a number (dictated ID/phone/date). 0 = off. */
   MUJEEB_NUMBER_HOLD_MS: z.coerce.number().int().min(0).max(5000).default(1200),
   MUJEEB_TOOL_CONFIRM_GRACE_MS: z.coerce.number().int().min(0).max(3000).default(400),
+  /** Phone calls: caller silence before Mujeeb checks the line (the clinic's silencePromptText). 0 = off. */
+  MUJEEB_SILENCE_PROMPT_MS: z.coerce.number().int().min(0).max(120_000).default(10_000),
+  /** Phone calls: further silence after that check before Mujeeb says goodbye and hangs up. */
+  MUJEEB_SILENCE_HANGUP_MS: z.coerce.number().int().min(1000).max(120_000).default(5000),
+  /** Phone calls: the longest call, from answer. 0 = no limit. */
+  MUJEEB_CALL_MAX_MS: z.coerce.number().int().min(0).max(14_400_000).default(600_000),
 
   MUJEEB_SCHEDULING_PROVIDER: z.enum(['none', 'memory', 'medplum']).default('memory'),
   MUJEEB_SCHEDULING_DATASET: z.string().trim().min(1).default('config/test-data/demo-clinic.dataset.json'),
@@ -114,6 +125,12 @@ export interface Settings {
     echoTailMs: number;
     toolConfirmGraceMs: number;
     numberHoldMs: number;
+    /** Answer a partial the STT has not committed after this long without new words. 0 = off. */
+    stalePartialCommitMs: number;
+    /** Phone calls only. 0 = off. */
+    silencePromptMs: number;
+    silenceHangupMs: number;
+    maxCallMs: number;
   };
   /** Appointment tools' scheduling system. `none`: no tools (the Phase 0 text-only agent). */
   scheduling: {
@@ -204,6 +221,10 @@ export function loadSettings(env: NodeJS.ProcessEnv, options?: { forceFakeProvid
       echoTailMs: e.MUJEEB_ECHO_TAIL_MS,
       toolConfirmGraceMs: e.MUJEEB_TOOL_CONFIRM_GRACE_MS,
       numberHoldMs: e.MUJEEB_NUMBER_HOLD_MS,
+      stalePartialCommitMs: e.MUJEEB_STT_STALE_PARTIAL_MS,
+      silencePromptMs: e.MUJEEB_SILENCE_PROMPT_MS,
+      silenceHangupMs: e.MUJEEB_SILENCE_HANGUP_MS,
+      maxCallMs: e.MUJEEB_CALL_MAX_MS,
     },
     scheduling: {
       provider: e.MUJEEB_SCHEDULING_PROVIDER,

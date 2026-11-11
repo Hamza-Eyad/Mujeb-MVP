@@ -154,8 +154,18 @@ export function buildSessionConfig(s: Settings): VoiceSessionConfig {
     vad: DEFAULT_ENERGY_VAD_OPTIONS,
     logTranscripts: s.log.transcripts,
     numberHoldMs: s.voice.numberHoldMs,
+    stalePartialCommitMs: s.voice.stalePartialCommitMs,
+    callEnding: {
+      silencePromptMs: s.voice.silencePromptMs,
+      silenceHangupMs: s.voice.silenceHangupMs,
+      maxCallMs: s.voice.maxCallMs,
+      maxCallTurnGraceMs: MAX_CALL_TURN_GRACE_MS,
+    },
   };
 }
+
+/** At the maximum call length, a turn under way gets this long to finish before the call is hung up anyway. */
+const MAX_CALL_TURN_GRACE_MS = 30_000;
 
 function required(value: string | undefined, name: string): string {
   if (value === undefined) throw new ConfigError(`${name} is required`);

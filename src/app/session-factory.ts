@@ -7,7 +7,7 @@ import type { LanguageModel } from '../ports/language-model.js';
 import type { SchedulingSystem } from '../ports/scheduling.js';
 import type { SpeechToText } from '../ports/speech-to-text.js';
 import type { TextToSpeech } from '../ports/text-to-speech.js';
-import { type SessionEvent, VoiceSession, type VoiceSessionConfig } from '../voice/session.js';
+import { type PhoneCallOptions, type SessionEvent, VoiceSession, type VoiceSessionConfig } from '../voice/session.js';
 
 /**
  * Everything one clinic's agent needs to run a session, built once at startup. Every entry point (the local
@@ -68,10 +68,12 @@ export function createVoiceSession(runtime: AgentRuntime, start: SessionStart): 
             maxToolRounds: toolsProfile.maxToolRounds,
             toolMutationGraceMs: scheduling.confirmGraceMs,
             toolDrainTimeoutMs: scheduling.writeTimeoutMs + 2 * scheduling.readTimeoutMs,
-            ...(toolsProfile.waitPhrase !== undefined ? { toolWaitPhrase: toolsProfile.waitPhrase } : {}),
+            ...(toolsProfile.waitPhrases !== undefined ? { toolWaitPhrases: toolsProfile.waitPhrases } : {}),
           }
         : {}),
     },
+    // Silence handling and the maximum call length apply to phone calls only, never to the local browser page.
+    ...(start.channel === 'phone' ? { phone: phoneCallOptions(profile) } : {}),
     transport,
     ...providers,
     ...(tools ? { tools } : {}),
@@ -80,4 +82,15 @@ export function createVoiceSession(runtime: AgentRuntime, start: SessionStart): 
     metrics: withSessionFields(runtime.metrics, { channel: start.channel, ...(start.callId !== undefined ? { call_id: start.callId } : {}) }),
     ...(start.observer ? { observer: start.observer } : {}),
   });
+}
+
+/** The clinic's fixed words for phone calls. Without silence words, silence never ends a call; the length limit still applies. */
+function phoneCallOptions(profile: AgentProfile): PhoneCallOptions {
+  const phone = profile.phone;
+  return {
+    ...(phone?.silencePromptText !== undefined && phone.silenceGoodbyeText !== undefined
+      ? { silence: { promptText: phone.silencePromptText, goodbyeText: phone.silenceGoodbyeText } }
+      : {}),
+    ...(phone?.maxDurationGoodbyeText !== undefined ? { maxDurationGoodbyeText: phone.maxDurationGoodbyeText } : {}),
+  };
 }

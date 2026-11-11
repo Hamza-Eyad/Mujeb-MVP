@@ -14,6 +14,11 @@ describe('config/agents profiles', () => {
   it.each(PROFILES)('%s loads with its instructions and dataset', async (dir) => {
     const profile = await loadAgentProfile(dir);
     expect(profile.instructions.length).toBeGreaterThan(0);
+    // Phone calls: a silent line is checked and ended politely, and the wait phrases vary.
+    expect(profile.phone?.silencePromptText).toBeTruthy();
+    expect(profile.phone?.silenceGoodbyeText).toBeTruthy();
+    expect(profile.phone?.maxDurationGoodbyeText).toBeTruthy();
+    if (profile.appointmentTools) expect(profile.appointmentTools.waitPhrases?.length).toBeGreaterThan(1);
     if (profile.schedulingDataset !== undefined) {
       const dataset = await loadSchedulingDataset(profile.schedulingDataset);
       expect(dataset.synthetic).toBe(true);

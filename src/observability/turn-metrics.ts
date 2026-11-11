@@ -6,6 +6,12 @@ import { DURATION_KEYS } from './turn-timeline.js';
 
 export type TurnOutcome = 'completed' | 'interrupted' | 'cancelled' | 'error';
 
+/**
+ * `user`: an answer to the caller. The rest are fixed words (no model): the greeting, and on phone calls the
+ * silent-line check, the goodbye after it, and the goodbye at the maximum call length.
+ */
+export type TurnKind = 'user' | 'greeting' | 'silence_prompt' | 'silence_goodbye' | 'max_duration_goodbye';
+
 /** Where a session's audio comes from: a phone call through the telephony gateway, or the local browser client. */
 export type SessionChannel = 'phone' | 'browser';
 
@@ -17,7 +23,7 @@ export interface TurnSummary {
   channel?: SessionChannel;
   /** Phone calls: the call ID from the dialplan, to join turns with the gateway's call log. */
   call_id?: string;
-  kind: 'user' | 'greeting';
+  kind: TurnKind;
   outcome: TurnOutcome;
   reason?: string;
   marks_ms: Partial<Record<TurnMark, number>>;

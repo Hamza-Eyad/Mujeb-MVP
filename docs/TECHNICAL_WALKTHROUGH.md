@@ -532,7 +532,7 @@ for round = 0; !aborted; round++:
     calls = mayCallTools ? completion.toolCalls : []
     if no calls: break
     
-    إذا ما قال النموذج شي بعد وفيه waitPhrase: output.push(text: waitPhrase)  // "لحظة أشيك لك."
+    إذا ما قال النموذج شي بعد وفيه waitPhrases: output.push(text: waitPhrases.next())  // عبارة من قائمة العيادة، تتنوع في المكالمة (WaitPhrasePicker)
     output.push({type:'pause'})                    // الجلسة تحوله CHUNK_FLUSH ليُنطق ما عندنا فورًا
     
     for call of calls:
@@ -904,7 +904,7 @@ reconcileEntry: يقرأ النظام (spec.reconcile) بمهلة قراءة:
 ### 12.3 العقود (`src/contracts/`)
 
 - **`appointment-tools.ts`:** مخطط zod `strictObject` لكل أداة من التسع (كل الحقول مطلوبة، والاختياري `nullable()` كما يتطلب strict function calling). `toolParametersJsonSchema` يحوّلها لـJSON Schema عبر `z.toJSONSchema`. `parseToolArguments` يتحقق من الوسائط الخام ويرجع وصف مشكلة آمن للنموذج.
-- **`agent-profile.ts`:** مخطط البروفايل: `tenantId`, `agentId`, `greeting`, `voiceId` (اختياري، صوت العيادة)، `historyMaxTurns` (1–50)، `timezone` (يُتحقق أنها IANA)، و`appointmentTools` (`patientVerification` قيمة واحدة مسموحة الآن `'dev-identifier-dob'`، `maxToolRounds` 1–8، `pendingActionTtlSec` 15–600، `maxReconfirmations` 0–5، `waitPhrase`، `allowedTools`). و`refine`: `timezone` إلزامي مع الأدوات.
+- **`agent-profile.ts`:** مخطط البروفايل: `tenantId`, `agentId`, `greeting`, `voiceId` (اختياري، صوت العيادة)، `historyMaxTurns` (1–50)، `timezone` (يُتحقق أنها IANA)، و`appointmentTools` (`patientVerification` قيمة واحدة مسموحة الآن `'dev-identifier-dob'`، `maxToolRounds` 1–8، `pendingActionTtlSec` 15–600، `maxReconfirmations` 0–5، `waitPhrases` (1–10 عبارات، و`waitPhrase` القديم يُقبل ويتحول لقائمة)، `allowedTools`)، و`phone` (للمكالمات فقط: `silencePromptText` و`silenceGoodbyeText` معًا، و`maxDurationGoodbyeText`). و`refine`: `timezone` إلزامي مع الأدوات.
 - **`dev-client-protocol.ts`:** رسائل المتصفح ← الخادم (`hello`, `mark`, `playback_started`, `playback_cleared`, `pong`) مفحوصة بـzod، والخادم ← المتصفح (`session_started`, `mark`, `clear`, `pause`, `resume`, `ping`, `event`, `error`).
 - **`scheduling-dataset.ts`:** مخطط ملف البيانات الاصطناعية.
 

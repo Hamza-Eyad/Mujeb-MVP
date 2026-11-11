@@ -26,6 +26,12 @@ export interface BargeInPolicy {
   /** Echo matching of partials needs at least this many words. */
   echoMinWords: number;
   /**
+   * A transcript whose every word is at least this similar (0–1, letters) to the word in the same place of a run of
+   * Mujeeb's own consecutive words is echo too, though STT misheard some letters (observed live on speakerphone:
+   * the greeting's "هلا والله" came back as "خلوا والله"). 0 = off.
+   */
+  echoFuzzySimilarity: number;
+  /**
    * A single *committed* word is treated as echo only if it is among Mujeeb's last N words.
    * Keeps a genuine "لا" from being swallowed because "لا" appeared earlier in a long reply.
    */
@@ -43,6 +49,7 @@ export const DEFAULT_BARGE_IN_POLICY: BargeInPolicy = {
   minInterruptWords: 2,
   echoOverlapRatio: 0.6,
   echoMinWords: 2,
+  echoFuzzySimilarity: 0.6,
   echoRecentWords: 8,
   backchannels: new Set(DEFAULT_BACKCHANNELS.map(normalizeArabic)),
 };
@@ -68,7 +75,7 @@ export function evaluateBargeIn(
     return { action: 'ignore', reason: 'backchannel', words: words.length };
   }
   const echoOverlap = overlapRatio(words, agent.fullText);
-  if (words.length >= policy.echoMinWords && echoOverlap >= policy.echoOverlapRatio) {
+  if (words.length >= policy.echoMinWords && (echoOverlap >= policy.echoOverlapRatio || isNearCopy(words, agent.fullText, policy))) {
     return { action: 'ignore', reason: 'echo', words: words.length, echoOverlap };
   }
   const [onlyWord] = words;
@@ -85,7 +92,51 @@ export function evaluateBargeIn(
 /** Used right after Mujeeb stops talking: a committed transcript matching its last reply is echo tail. */
 export function isEchoOf(transcript: string, agentText: string, policy: BargeInPolicy): boolean {
   const words = tokenize(transcript);
-  return words.length >= policy.echoMinWords && overlapRatio(words, agentText) >= policy.echoOverlapRatio;
+  return words.length >= policy.echoMinWords && (overlapRatio(words, agentText) >= policy.echoOverlapRatio || isNearCopy(words, agentText, policy));
+}
+
+/**
+ * Is the transcript a misheard copy of consecutive words Mujeeb said? Word by word, in order: every word must
+ * resemble the word in the same place of some run of Mujeeb's words, after folding the sounds STT tends to swap in
+ * Saudi speech over a phone line. One word of the caller's own (they rarely resemble Mujeeb's) breaks the match,
+ * so an echoed phrase followed by "لا لحظة" still interrupts.
+ */
+function isNearCopy(words: readonly string[], agentText: string, policy: BargeInPolicy): boolean {
+  if (policy.echoFuzzySimilarity <= 0 || words.length < policy.echoMinWords) return false;
+  const said = tokenize(agentText).map(foldSounds);
+  const heard = words.map(foldSounds);
+  for (let start = 0; start + heard.length <= said.length; start += 1) {
+    if (heard.every((word, i) => similarity(word, said[start + i] ?? '') >= policy.echoFuzzySimilarity)) return true;
+  }
+  return false;
+}
+
+/** Letters STT confuses on Saudi phone speech, as one letter each (normalized text in, for matching only). */
+const SOUND_CLASSES: Record<string, string> = { ح: 'ه', خ: 'ه', ع: 'ا', ص: 'س', ث: 'س', ط: 'ت', ظ: 'ض', ذ: 'ز' };
+
+function foldSounds(text: string): string {
+  return [...text].map((ch) => SOUND_CLASSES[ch] ?? ch).join('');
+}
+
+/** 1 − edit distance / longer length. */
+function similarity(a: string, b: string): number {
+  const longer = Math.max(a.length, b.length);
+  return longer === 0 ? 1 : 1 - editDistance(a, b) / longer;
+}
+
+function editDistance(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  let previous = Array.from({ length: y.length + 1 }, (_v, j) => j);
+  for (let i = 1; i <= x.length; i += 1) {
+    const row = [i];
+    for (let j = 1; j <= y.length; j += 1) {
+      const cost = x[i - 1] === y[j - 1] ? 0 : 1;
+      row.push(Math.min((previous[j] ?? 0) + 1, (row[j - 1] ?? 0) + 1, (previous[j - 1] ?? 0) + cost));
+    }
+    previous = row;
+  }
+  return previous[y.length] ?? 0;
 }
 
 function overlapRatio(words: readonly string[], agentText: string): number {
