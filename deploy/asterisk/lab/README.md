@@ -17,6 +17,7 @@ MicroSIP (Windows) --SIP/RTP 127.0.0.1:5070--> Asterisk 22.11.0 (WSL Ubuntu 24.0
 | `build-asterisk.sh` | بناء Asterisk ‏22.11.0 من المصدر. الإصدار والـchecksum ثابتان، والبناء يفشل لو الملف مختلف |
 | `setup-lab.sh` | كتابة إعدادات `/etc/asterisk` كاملة، وتوليد كلمات السر خارج المستودع، وتثبيت رسالة الاعتذار. وفيه خط تجريبي اختياري (`MUJEEB_LAB_TRUNK`) |
 | `load-calls.sh` | يبدأ عدة مكالمات اصطناعية في نفس اللحظة، لاختبارات الحمل (القسم أدناه) |
+| `start-lab.ps1` و`start-lab.cmd` | تشغيل المختبر بضغطة واحدة على Windows: Asterisk ثم مُجيب (القسم «التشغيل») |
 | `sounds/unavailable.txt` | نص رسالة الاعتذار المعتمد |
 | `sounds/unavailable.sln16` | الرسالة بصوت العيادة، PCM ‏16 kHz. تُولَّد مرة واحدة بـ`npm.cmd run lab:render-unavailable` (طلب ElevenLabs واحد)، وليس عند كل مكالمة |
 
@@ -56,6 +57,36 @@ MicroSIP (Windows) --SIP/RTP 127.0.0.1:5070--> Asterisk 22.11.0 (WSL Ubuntu 24.0
    - في الكودكات فعّل **G.722** أولًا، لأنه أقرب لخط ExaCall. MicroSIP يختار μ-law افتراضيًا.
 
 ## التشغيل
+
+### بضغطة واحدة
+
+دبل كلك على `start-lab.cmd` في هذا المجلد، أو من terminal:
+
+```powershell
+.\deploy\asterisk\lab\start-lab.ps1                 # يسألك عن الوضع
+.\deploy\asterisk\lab\start-lab.ps1 -Mode exacall   # بدون سؤال
+```
+
+- **ما يسويه:**
+  - يفتح كونسول Asterisk في نافذة جديدة. وإذا كان Asterisk شغّال من قبل، يفتح الكونسول بس.
+  - يشغّل مُجيب في نفس النافذة، مع Node 24 وملف الـroutes المناسب للوضع.
+  - ما يغيّر أي إعدادات.
+- **الأوضاع:**
+
+  | الوضع | المكالمة | الـroutes | التكلفة |
+  |---|---|---|---|
+  | `exacall` | من الجوال إلى رقم المزود | `config/telephony/routes.local.json` | مزودون حقيقيون |
+  | `microsip` | MicroSIP إلى 300 | `config/telephony/routes.json` | مزودون حقيقيون |
+  | `fake` | MicroSIP إلى 300 | `config/telephony/routes.json` | بدون تكلفة |
+
+- **متى يكون جاهز:** لما يطلع سطر `telephony gateway:` في نافذة مُجيب.
+- **الإيقاف:**
+  - مُجيب: `Ctrl+C`.
+  - Asterisk: `core stop now` في الكونسول، أو اقفل نافذته.
+- **لو المنفذ مشغول:** السكربت يتوقف إذا كان مُجيب شغّال في نافذة ثانية. أوقفه أول، ثم أعد التشغيل لتغيير الوضع.
+- رسائل النافذة بالإنجليزي، لأن الـconsole في Windows ما يعرض العربي بشكل صحيح.
+
+### يدويًا
 
 ```bash
 # WSL: تشغيل Asterisk (بدون systemd في المختبر)

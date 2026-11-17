@@ -4,3 +4,5 @@
 deploy/asterisk/** text eol=lf
 # Prompt audio (raw PCM) is binary: no line-ending conversion.
 deploy/asterisk/**/*.sln16 binary
+# Windows launchers run in cmd.exe, which misreads LF-only batch files.
+deploy/asterisk/**/*.cmd text eol=crlf
