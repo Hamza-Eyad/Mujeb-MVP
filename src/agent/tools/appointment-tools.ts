@@ -106,6 +106,12 @@ const WEEKDAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأر�
 const PART_OF_DAY: Record<'morning' | 'afternoon' | 'evening', [number, number]> = { morning: [0, 720], afternoon: [720, 1020], evening: [1020, 1440] };
 const ACTIVE: ReadonlySet<AppointmentStatus> = new Set(['booked', 'pending']);
 const LIST_LIMIT = 10;
+const STARTED_TODAY_HINT =
+  'started_today: the patient\'s appointments today whose time has already come (state in_progress: happening now; ended: already over). ' +
+  'When the caller asks about their appointments, mention them too, with their spoken field: ended in the past tense ' +
+  '("كان عندك موعد اليوم الساعة …"), in_progress as now ("موعدك اليوم الساعة …، يعني وقته الحين"). Never say the caller has no appointments today. ' +
+  'An in_progress appointment has a ref: if the caller wants it at another time, move it (search_available_slots with for_appointment_ref, ' +
+  'then propose_reschedule); it cannot be cancelled. An ended appointment has no ref and cannot be changed; say briefly that its time has passed.';
 /** Directory entries returned when the model lists the directory (no name to search). */
 const DIRECTORY_LIST_LIMIT = 20;
 /** A directory match below this score is a one-letter-off match (core/text-match FUZZY_WEIGHT): reported as approximate. */
@@ -568,11 +574,33 @@ export class AppointmentTools {
 
   private async listAppointments(input: ListPatientAppointmentsInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
     const patient = this.verifiedPatient(input.patient_ref);
-    const list = await this.read(turn, (ctx) => this.o.scheduling.listAppointments(ctx, { patientId: patient.id }));
+    // From the start of the clinic's day: an appointment that already started or ended today is reported, not "none".
+    const list = await this.read(turn, (ctx) => this.o.scheduling.listAppointments(ctx, { patientId: patient.id, from: this.startOf(this.today()) }));
+    const now = this.now().getTime();
+    const upcoming = list.filter((a) => a.start.getTime() > now);
+    const startedToday = list.filter((a) => a.start.getTime() <= now).slice(0, LIST_LIMIT);
     return {
       status: 'ok',
-      appointments: list.slice(0, LIST_LIMIT).map((a) => ({ ref: this.refs.register('appointment', a), ...this.describe(a) })),
-      more: list.length > LIST_LIMIT,
+      appointments: upcoming.slice(0, LIST_LIMIT).map((a) => ({ ref: this.refs.register('appointment', a), ...this.describe(a) })),
+      more: upcoming.length > LIST_LIMIT,
+      ...(startedToday.length > 0 ? { started_today: startedToday.map((a) => this.describeStartedToday(a, now)), hint: STARTED_TODAY_HINT } : {}),
+    };
+  }
+
+  /**
+   * Today's appointment whose time has come, spoken as "اليوم الساعة …". One happening now has a ref: a late caller
+   * may move it to a new time (propose_reschedule). One already over has none: nothing to change in the call.
+   */
+  private describeStartedToday(a: AppointmentRecord, now: number): Record<string, unknown> {
+    const { time } = instantToZoned(a.start, this.o.timeZone);
+    const inProgress = a.end.getTime() > now;
+    return {
+      ...(inProgress ? { ref: this.refs.register('appointment', a) } : {}),
+      state: inProgress ? 'in_progress' : 'ended',
+      time,
+      spoken: `اليوم الساعة ${spokenTime(time)}`,
+      doctor: a.practitionerName,
+      service: a.serviceName,
     };
   }
 
@@ -635,6 +663,9 @@ export class AppointmentTools {
 
   private async proposeReschedule(input: ProposeRescheduleInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
     const appointment = this.ownedAppointment(input.appointment_ref);
+    if (appointment.end.getTime() <= this.now().getTime()) {
+      throw new ToolRejection('appointment_ended', 'That appointment is already over and cannot be changed. Offer a new booking instead.');
+    }
     const slot = this.resolve('slot', input.new_slot_ref);
     if (slot.serviceId !== appointment.serviceId) throw serviceChangeRejection();
     if (slot.start.getTime() <= this.now().getTime()) throw new ToolRejection('slot_expired', 'That time has passed. Search again.');
@@ -668,6 +699,10 @@ export class AppointmentTools {
 
   private async proposeCancellation(input: ProposeCancellationInput, turn: ToolTurnContext): Promise<Record<string, unknown>> {
     const appointment = this.ownedAppointment(input.appointment_ref);
+    // Its time has come (the caller is late, or it is over): it can only be moved to a new time, not cancelled.
+    if (appointment.start.getTime() <= this.now().getTime()) {
+      throw new ToolRejection('appointment_started', 'That appointment\'s time has already started, so it cannot be cancelled. Offer to move it to a new time.');
+    }
     const target: ActionTarget = {
       kind: 'cancellation',
       patientId: appointment.patientId,

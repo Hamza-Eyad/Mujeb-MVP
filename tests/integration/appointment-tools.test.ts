@@ -5,6 +5,7 @@ import { AppointmentTools, type AppointmentToolsOptions, type ToolTurnContext } 
 import { spokenCalendarDate } from '../../src/agent/tools/spoken-arabic.js';
 import { type SchedulingDataset, parseSchedulingDataset } from '../../src/contracts/scheduling-dataset.js';
 import { CancelledError, ProviderError } from '../../src/core/errors.js';
+import { addDays, zonedToInstant } from '../../src/core/zoned-time.js';
 import type { LogFields, Logger } from '../../src/core/logger.js';
 
 /**
@@ -39,8 +40,9 @@ class RecordingLogger implements Logger {
   }
 }
 
-function setup(options?: { latencyMs?: number; tools?: Partial<AppointmentToolsOptions> }) {
-  const system = new MemorySchedulingSystem({ tenantId: TENANT.tenantId, dataset: dataset(), now: () => NOW, ...(options?.latencyMs ? { latencyMs: options.latencyMs } : {}) });
+function setup(options?: { latencyMs?: number; now?: () => Date; tools?: Partial<AppointmentToolsOptions> }) {
+  const now = options?.now ?? (() => NOW);
+  const system = new MemorySchedulingSystem({ tenantId: TENANT.tenantId, dataset: dataset(), now, ...(options?.latencyMs ? { latencyMs: options.latencyMs } : {}) });
   const log = new RecordingLogger();
   const tools = new AppointmentTools({
     scheduling: system,
@@ -49,7 +51,7 @@ function setup(options?: { latencyMs?: number; tools?: Partial<AppointmentToolsO
     timeZone: 'Asia/Riyadh',
     log,
     verificationPolicy: 'dev-identifier-dob',
-    now: () => NOW,
+    now,
     ...options?.tools,
   });
   let userTurn = 0;
@@ -109,6 +111,18 @@ async function firstSlot(call: Call, service: string, extra?: Record<string, unk
     ...extra,
   });
   return first(out, 'slots');
+}
+
+/** Books the first family-medicine slot for the patient without appointments; returns the refs, the slot and its start. */
+async function bookFirstFamilySlot(turn: ReturnType<typeof setup>['turn']) {
+  let call = turn('أبي موعد طب أسرة');
+  const patient = await verify(call, { national_id: '1000000500', birth_date: '1978-01-25' });
+  const service = await serviceRef(call, 'طب الأسرة');
+  const slot = await firstSlot(call, service);
+  await call('propose_booking', { patient_ref: patient, slot_ref: slot['ref'] });
+  call = turn('إيه ثبّته');
+  expect(await call('confirm_pending_action', { action_ref: 'C1', caller_answer: 'yes' })).toMatchObject({ status: 'done' });
+  return { patient, service, slot, start: zonedToInstant(str(slot['date']), str(slot['time']), 'Asia/Riyadh') };
 }
 
 describe('AppointmentTools', () => {
@@ -306,6 +320,59 @@ describe('AppointmentTools', () => {
     const patient = await verify(call, { national_id: '1000000500', birth_date: '1978-01-25' });
     expect(slot['ref']).toBe('S1');
     expect(await call('propose_booking', { patient_ref: patient, slot_ref: 'S1' })).toMatchObject({ status: 'unknown_ref' });
+  });
+
+  it("reports today's appointment that started or ended, not as none", async () => {
+    let clock = NOW;
+    const { turn } = setup({ now: () => clock });
+    const { patient, slot, start } = await bookFirstFamilySlot(turn);
+    const list = () => turn('وش مواعيدي؟')('list_patient_appointments', { patient_ref: patient });
+
+    clock = new Date(start.getTime() - 60_000);
+    const before = await list();
+    expect(before).toMatchObject({ appointments: [{ time: slot['time'] }] });
+    expect(before).not.toHaveProperty('started_today');
+
+    clock = new Date(start.getTime() + 5 * 60_000);
+    const during = await list();
+    expect(during).toMatchObject({ appointments: [], started_today: [{ state: 'in_progress', time: slot['time'], doctor: slot['doctor'] }] });
+    expect(str(first(during, 'started_today')['spoken'])).toMatch(/^اليوم الساعة /);
+    expect(str(during['hint'])).toContain('Never say the caller has no appointments today');
+    const lateRef = str(first(during, 'started_today')['ref']);
+
+    clock = zonedToInstant(str(slot['date']), '23:59', 'Asia/Riyadh');
+    const ended = await list();
+    expect(ended).toMatchObject({ appointments: [], started_today: [{ state: 'ended', time: slot['time'] }] });
+    expect(first(ended, 'started_today')).not.toHaveProperty('ref');
+    // A ref from while it was happening no longer moves it once it is over.
+    expect(await turn('انقله')('propose_reschedule', { appointment_ref: lateRef, new_slot_ref: 'S1' })).toMatchObject({ status: 'appointment_ended' });
+
+    // The next day it is no longer today's appointment.
+    clock = zonedToInstant(addDays(str(slot['date']), 1), '08:00', 'Asia/Riyadh');
+    const nextDay = await list();
+    expect(nextDay).toMatchObject({ appointments: [] });
+    expect(nextDay).not.toHaveProperty('started_today');
+  });
+
+  it('moves an appointment that is happening now to a new time, but does not cancel it', async () => {
+    let clock = NOW;
+    const { turn } = setup({ now: () => clock });
+    const { patient, service, start } = await bookFirstFamilySlot(turn);
+    clock = new Date(start.getTime() + 5 * 60_000);
+
+    let call = turn('أنا متأخر على موعدي');
+    const late = first(await call('list_patient_appointments', { patient_ref: patient }), 'started_today');
+    expect(await call('propose_cancellation', { appointment_ref: late['ref'], reason: null })).toMatchObject({ status: 'appointment_started' });
+
+    const target = await firstSlot(call, service, { for_appointment_ref: late['ref'] });
+    expect(zonedToInstant(str(target['date']), str(target['time']), 'Asia/Riyadh').getTime()).toBeGreaterThan(clock.getTime());
+    const proposal = await call('propose_reschedule', { appointment_ref: late['ref'], new_slot_ref: target['ref'] });
+    expect(proposal).toMatchObject({ status: 'confirmation_required', read_back: { from: { time: late['time'] }, to: { time: target['time'] } } });
+    call = turn('إيه انقله');
+    expect(await call('confirm_pending_action', { action_ref: proposal['action_ref'], caller_answer: 'yes' })).toMatchObject({
+      status: 'done',
+      appointment: { ref: late['ref'], time: target['time'], date: target['date'] },
+    });
   });
 
   it('reschedules within the same service and refuses a change of service', async () => {

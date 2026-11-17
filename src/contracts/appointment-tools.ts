@@ -100,7 +100,9 @@ export const APPOINTMENT_TOOLS = {
     input: findPatientInput,
   },
   list_patient_appointments: {
-    description: "List a verified patient's upcoming appointments, earliest first, as appointment refs.",
+    description:
+      "List a verified patient's upcoming appointments, earliest first, as appointment refs. Today's appointments whose time has already come " +
+      '(happening now or already over) are returned separately in started_today; only one happening now has a ref, to move it to a new time.',
     input: listPatientAppointmentsInput,
   },
   propose_registration: {
